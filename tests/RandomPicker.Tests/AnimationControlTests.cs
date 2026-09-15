@@ -199,4 +199,68 @@ public class AnimationControlTests
 
         return buffer.Any(value => value != 0);
     }
+
+    /// <summary>取位图上某个像素的 alpha（0 = 全透明，255 = 全不透明）。</summary>
+    /// <param name="bitmap">要读的位图。</param>
+    /// <param name="x">横坐标。</param>
+    /// <param name="y">纵坐标。</param>
+    private static byte AlphaAt(RenderTargetBitmap bitmap, int x, int y)
+    {
+        var width = bitmap.PixelSize.Width;
+        var height = bitmap.PixelSize.Height;
+        var stride = width * 4;
+        var buffer = new byte[stride * height];
+
+        var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+        try
+        {
+            bitmap.CopyPixels(new PixelRect(0, 0, width, height),
+                handle.AddrOfPinnedObject(), buffer.Length, stride);
+        }
+        finally
+        {
+            handle.Free();
+        }
+
+        // 每个像素 4 个字节，最后一个是不透明度。
+        return buffer[(y * width + x) * 4 + 3];
+    }
+
+    /// <summary>
+    /// CSGO：舞台的四角必须是空的——不许铺一层铺满整块的背景。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是为 2026-09-16「csgo 不小心把全局背景颜色也改成品质色了」建的。</b>
+    /// 那层背景铺满整个舞台、还跟着品质一路换色，滚动的时候整屏一闪一闪，
+    /// 把真正要看的那排方块都压住了。主人要求撤掉。
+    /// <para/>
+    /// 方块只占纵向中间那一行，所以四角理应全透明。哪天有人再把整块背景加回来，
+    /// 四角的 alpha 就不再是 0，这条立刻会红——比靠肉眼看出来可靠得多。
+    /// </remarks>
+    [AvaloniaFact]
+    public void CsgoAnimation_LeavesTheStageCornersEmpty()
+    {
+        // 造一份真实的排片表并装进控件。
+        var plan = RevealAnimationPlanner.Build(RevealAnimationStyle.Csgo, Names, "张三",
+            SettingsFor(RevealAnimationStyle.Csgo));
+        Assert.NotNull(plan);
+
+        var control = new CsgoAnimation(BaseSettings.RevealFontSize, Colors.Cyan);
+        control.Load(plan);
+        // 推到终点：中选方块高亮、品质色最浓，这是画面元素最多的时候。
+        control.SnapToEnd();
+
+        var bitmap = RenderToBitmap(control);
+        var right = bitmap.PixelSize.Width - 1;
+        var bottom = bitmap.PixelSize.Height - 1;
+
+        // 四个角都该是全透明的。
+        Assert.Equal(0, AlphaAt(bitmap, 0, 0));
+        Assert.Equal(0, AlphaAt(bitmap, right, 0));
+        Assert.Equal(0, AlphaAt(bitmap, 0, bottom));
+        Assert.Equal(0, AlphaAt(bitmap, right, bottom));
+
+        // 对照：中间那一行确实画了东西，不然上面那几条「全透明」可能是因为压根没渲染。
+        Assert.True(HasAnyVisiblePixel(bitmap), "整张位图是空的，这条测试等于没测");
+    }
 }

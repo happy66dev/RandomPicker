@@ -254,4 +254,73 @@ public class WindowPlacementTests
     }
 
     #endregion
+
+    #region 分辨率变过就该重置位置
+
+    /// <summary>记位置时那块屏幕还在，位置照旧用。</summary>
+    [Fact]
+    public void MatchesAnyScreen_WithTheSameScreen_ReturnsTrue()
+    {
+        Assert.True(WindowPlacement.MatchesAnyScreen(1920, 1080, [new ScreenArea(0, 0, 1920, 1080)]));
+    }
+
+    /// <summary>
+    /// 分辨率换过（1920×1080 → 3840×2160）就找不到了，调用方据此回到默认位置。
+    /// </summary>
+    /// <remarks>
+    /// 这就是主人要的「屏幕分辨率变化时重置位置」：那组坐标在新屏幕上未必还有意义，
+    /// 可能落在屏幕外、也可能跑到完全不相干的地方。
+    /// </remarks>
+    [Fact]
+    public void MatchesAnyScreen_WhenTheScreenChanged_ReturnsFalse()
+    {
+        Assert.False(WindowPlacement.MatchesAnyScreen(1920, 1080, [new ScreenArea(0, 0, 3840, 2160)]));
+    }
+
+    /// <summary>
+    /// 双屏：主屏换成了 4K，但副屏还是原来那块——窗口本来就摆在副屏上，位置依然有效。
+    /// </summary>
+    /// <remarks>
+    /// <b>判据是「任意一块对得上」，不是「当前这块对得上」。</b>
+    /// 开机那一瞬间窗口还在原点，按当前屏幕算会拿主屏的尺寸去比副屏记下的值，
+    /// 明明什么都没变，位置却被重置了。
+    /// </remarks>
+    [Fact]
+    public void MatchesAnyScreen_WithASecondScreenOfTheOldSize_ReturnsTrue()
+    {
+        Assert.True(WindowPlacement.MatchesAnyScreen(1920, 1080,
+            [new ScreenArea(0, 0, 3840, 2160), new ScreenArea(3840, 0, 1920, 1080)]));
+    }
+
+    /// <summary>
+    /// 没记录过屏幕尺寸时一律按「没变过」处理。
+    /// </summary>
+    /// <remarks>
+    /// 喵~防御：老版本的配置文件里只有坐标、没有尺寸。要是把「没记录」当成「找不到」，
+    /// 那升级一次就会把主人摆好的位置重置掉。只记了一半（配置文件被手改坏）同样处理。
+    /// </remarks>
+    [Fact]
+    public void MatchesAnyScreen_WithNoRecordedSize_ReturnsTrue()
+    {
+        ScreenArea[] screens = [new(0, 0, 3840, 2160)];
+
+        Assert.True(WindowPlacement.MatchesAnyScreen(int.MinValue, int.MinValue, screens));
+        Assert.True(WindowPlacement.MatchesAnyScreen(1920, int.MinValue, screens));
+        Assert.True(WindowPlacement.MatchesAnyScreen(int.MinValue, 1080, screens));
+    }
+
+    /// <summary>
+    /// 一块屏幕都拿不到（开机那一瞬间显示器信息还没就绪）时也要保留原位置。
+    /// </summary>
+    /// <remarks>
+    /// 喵~防御：位置没摆对只是不好看，重置错了是坏掉——拿不准的时候什么都不做。
+    /// </remarks>
+    [Fact]
+    public void MatchesAnyScreen_WithNoScreens_ReturnsTrue()
+    {
+        Assert.True(WindowPlacement.MatchesAnyScreen(1920, 1080, []));
+        Assert.True(WindowPlacement.MatchesAnyScreen(1920, 1080, null));
+    }
+
+    #endregion
 }

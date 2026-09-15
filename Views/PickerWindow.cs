@@ -267,8 +267,9 @@ public class PickerWindow : Window
         ClampToScreen();
         ApplyAccent();
 
-        // 喵~防御：刚开机时显示器信息可能迟到——那一刻拿不到屏幕、或者拿到的是空矩形。
-        // 这时候摆位和夹取都会失败，窗口就停在系统给的默认位置，也就是左上角 (0,0)。
+        // 喵~防御：刚开机时显示器信息可能迟到——那一刻拿不到屏幕、拿到的是空矩形，
+        // 或者拿到的是个<b>非空但尺寸不对</b>的占位矩形。这时候摆位和夹取都不算数，
+        // 窗口就停在系统给的默认位置，也就是左上角 (0,0)。
         // 这就是「重启后悬浮钮跑到左上角」那个 bug。这里每 250 毫秒重试一次，
         // 最多试 5 秒；一旦摆成功就立刻停掉，不打扰后面的正常使用。
         StartPositionRetry();
@@ -283,19 +284,62 @@ public class PickerWindow : Window
     /// <summary>已经重试了几次。用来兜住「屏幕信息一直没就绪」这种极端情况。</summary>
     private int _positionRetryCount;
 
-    /// <summary>最多重试几次。250 毫秒 × 20 次 = 5 秒。</summary>
-    private const int MaxPositionRetries = 20;
+    /// <summary>最多重试几次。250 毫秒 × 60 次 = 15 秒。</summary>
+    /// <remarks>
+    /// 原来是 5 秒。开机那一段屏幕信息迟到得比这久的时候，重试就用完了，
+    /// 而用完之后夹取会恢复正常、位置也就定死在原地——那是「跑到左上角」的另一半成因。
+    /// 放宽到 15 秒：等待期间位置其实已经摆对了（见 <see cref="RestorePosition"/> 的顺序），
+    /// 所以多试一会儿既不会打扰主人，又能把分辨率判定做完。
+    /// </remarks>
+    private const int MaxPositionRetries = 60;
 
-    /// <summary>位置是不是已经按设置摆好了。</summary>
-    private bool _positionRestored;
+    /// <summary>
+    /// 摆位阶段是不是已经结束（摆好了，或者重试次数用完了）。
+    /// </summary>
+    /// <remarks>
+    /// 只管一件事：<see cref="ClampToScreen"/> 在这之前一律不干活。
+    /// 那段时间屏幕信息可能不可信，拿它夹取会把还没摆好的位置钉到假屏幕上去。
+    /// <para/>
+    /// <b>注意它和 <see cref="_positionTrustworthy"/> 是两回事，别合并。</b>
+    /// 重试放弃时这个标记也会立起来（好让夹取恢复正常），但那时候的位置（0,0）
+    /// 依然是不可信的，不能存盘。
+    /// </remarks>
+    private bool _placementSettled;
+
+    /// <summary>
+    /// 当前这个位置能不能信——能不能把它存回配置。
+    /// </summary>
+    /// <remarks>
+    /// 只有两种情况算数：自动摆位确实摆成功了，或者主人自己拖动过。
+    /// 其余时候（窗口还停在系统给的 (0,0) 上）记下来的都是坏值。
+    /// 详见 <see cref="CapturePosition"/> 的说明。
+    /// </remarks>
+    private bool _positionTrustworthy;
+
+    /// <summary>
+    /// 分辨率「对不上」时要先重试几次，才认定它真的变了。
+    /// </summary>
+    /// <remarks>
+    /// 开机那几秒显示器可能还没枚举完，<c>Screens.All</c> 里只有一块尺寸不对的占位屏幕。
+    /// 那时候「记位置时的那块屏幕找不到了」和「分辨率真的变了」长得一模一样。
+    /// 前者会自己好，所以先给它一点时间：8 × 250 毫秒 = 2 秒，开机那一段足够过去。
+    /// 真是分辨率变了的话，多等这 2 秒也无所谓——那件事一辈子遇不上几次。
+    /// </remarks>
+    private const int ResolutionRetryCount = 8;
 
     /// <summary>
     /// 按设置把窗口摆到该在的地方。
     /// </summary>
-    /// <returns>摆好了返回 true；屏幕信息还没就绪、这次摆不了，返回 false。</returns>
+    /// <returns>这一次把该做的都做完了返回 true；还要等屏幕信息、请稍后再试，返回 false。</returns>
     /// <remarks>
-    /// 分两种情形：配置里没有记录位置（首次运行）就摆在主屏右下角靠里的地方；
-    /// 有记录就摆回上次的位置。
+    /// <b>顺序是「先摆位置，再判分辨率」</b>，这个顺序很要紧：
+    /// 记下来的坐标是上次存下来的正确值，先把它摆上去，主人立刻看到的就是对的位置，
+    /// 不必等屏幕信息就绪。之后再拿屏幕信息判断「记位置时那块屏幕还在不在」，
+    /// 判出分辨率真变过了才改摆默认角落。
+    /// <para/>
+    /// 反过来的话（先等屏幕信息再摆）在开机那几秒是有代价的：屏幕信息迟到多久，
+    /// 窗口就停在 (0,0) 多久。2026-09-16 主人报的「开机后悬浮钮跑到左上角」正是这个，
+    /// 而且更糟——见 <see cref="CapturePosition"/> 的说明，那时候还会把 (0,0) 存进配置。
     /// <para/>
     /// <b>这个方法是幂等的</b>，重试时重复调用不会出问题——所以能直接拿来当重试体。
     /// </remarks>
@@ -303,37 +347,91 @@ public class PickerWindow : Window
     {
         var screen = PickScreen();
 
-        // 喵~防御：屏幕还没探到，或者拿到的是个空矩形——这时候算什么都是错的，
-        // 报个 false 让调用方稍后再来。绝不能拿它去算位置，那样只会算出 (0,0)。
-        if (screen is null)
-        {
-            return false;
-        }
+        // 屏幕信息可信不可信，全交给纯计算层判（那边有单测钉着）。
+        // 拿不到屏幕时一律按不可信处理。
+        var screenUsable = screen is not null
+                           && WindowPlacement.IsUsable(ToArea(screen.Bounds), screen.Scaling);
 
-        // 屏幕信息换算成纯计算层认识的形状。摆位判断全交给 WindowPlacement，
-        // 那边有单测钉着「信息不可信时不要动窗口」，这里只负责把值搬过去。
-        var bounds = ToArea(screen.Bounds);
-        var workingArea = ToArea(screen.WorkingArea);
+        // 有没有记过位置。
+        var hasSavedPosition = _settings.WindowX != int.MinValue && _settings.WindowY != int.MinValue;
 
-        if (_settings.WindowX == int.MinValue || _settings.WindowY == int.MinValue)
+        // 没记过位置（首次运行）：得有可信的屏幕信息才能算出默认角落在哪儿。
+        if (!hasSavedPosition)
         {
-            // 首次运行：摆在主屏右下角靠里一点的位置。
-            var corner = WindowPlacement.DefaultCorner(workingArea, screen.Scaling, _settings.Diameter);
-            // 喵~防御：还算不准就先不摆，交给重试。
-            if (corner is null)
+            // 喵~防御：屏幕信息还没就绪时报 false 交给重试，绝不拿坏值算位置——
+            // 拿空矩形算出来的「默认角落」就是屏幕原点，那正是左上角那个 bug。
+            if (!screenUsable)
             {
                 return false;
             }
 
-            Position = new PixelPoint(corner.Value.X, corner.Value.Y);
-        }
-        else
-        {
-            // 摆回上次记下来的位置。
-            Position = new PixelPoint(_settings.WindowX, _settings.WindowY);
+            return PlaceAtDefaultCorner(ToArea(screen!.WorkingArea), screen.Scaling);
         }
 
-        _positionRestored = true;
+        // 记过位置：先摆上去。这组坐标是上次存下来的正确值，先摆上去位置立刻就是对的。
+        Position = new PixelPoint(_settings.WindowX, _settings.WindowY);
+
+        // 喵~防御：屏幕信息还不可信时到此为止，但<b>不标记摆位结束</b>——
+        // 继续留在重试循环里，等屏幕信息就绪了再判下面那条。
+        // 这段等待期里位置已经是对的，主人看不出任何异常。
+        if (!screenUsable)
+        {
+            return false;
+        }
+
+        // 喵~防御：坐标正好是 (0,0)、又从来没记过屏幕尺寸——这是老版本留下的脏数据。
+        // 那时候「位置还没摆好就被存盘」那个 bug 还在，窗口停在系统默认的 (0,0) 时
+        // 一存盘就把主人原来摆的位置覆盖掉了。这种数据不用等也不用猜，直接自愈回默认角落。
+        // （主人当真把悬浮钮摆在左上角时，用新版本存过一次就会有屏幕尺寸记录，
+        //  这一条不会再触发，不会误伤。）
+        if (_settings.WindowX == 0 && _settings.WindowY == 0
+            && _settings.WindowScreenWidth == int.MinValue)
+        {
+            return PlaceAtDefaultCorner(ToArea(screen!.WorkingArea), screen.Scaling);
+        }
+
+        // 屏幕信息可信了：判一判「记位置时那块屏幕还在不在」。
+        var savedScreenGone = !WindowPlacement.MatchesAnyScreen(
+            _settings.WindowScreenWidth, _settings.WindowScreenHeight, CurrentScreenAreas());
+
+        if (savedScreenGone)
+        {
+            // 对不上，但还可能是「显示器还没枚举完」——那种会自己好，先重试几次再认账。
+            // 真的是分辨率变了的话，多等这几秒也无所谓，那件事一辈子遇不上几次。
+            if (_positionRetryCount < ResolutionRetryCount)
+            {
+                return false;
+            }
+
+            // 试够了还是对不上：分辨率确实变过了（换显示器、改分辨率、接投影），
+            // 那组坐标在新屏幕上未必还有意义——回默认角落。
+            return PlaceAtDefaultCorner(ToArea(screen!.WorkingArea), screen.Scaling);
+        }
+
+        // 位置对、屏幕也对：摆位阶段到此结束，之后 ClampToScreen 才恢复干活。
+        _placementSettled = true;
+        // 位置是排片表里存着的那一个，可信，可以存回配置。
+        _positionTrustworthy = true;
+        return true;
+    }
+
+    /// <summary>把窗口摆到主屏右下角靠里一点的位置。</summary>
+    /// <param name="workingArea">主屏的工作区（不含任务栏）。</param>
+    /// <param name="scaling">屏幕缩放比例。</param>
+    /// <returns>摆好了返回 true；还算不准返回 false，交给重试。</returns>
+    private bool PlaceAtDefaultCorner(ScreenArea workingArea, double scaling)
+    {
+        var corner = WindowPlacement.DefaultCorner(workingArea, scaling, _settings.Diameter);
+        // 喵~防御：还算不准就先不摆，交给重试——绝不能拿坏值算出一个「最保守的位置」。
+        if (corner is null)
+        {
+            return false;
+        }
+
+        Position = new PixelPoint(corner.Value.X, corner.Value.Y);
+        _placementSettled = true;
+        // 这是我们自己按屏幕信息算出来的位置，可信，可以存回配置。
+        _positionTrustworthy = true;
         return true;
     }
 
@@ -344,8 +442,8 @@ public class PickerWindow : Window
     /// </remarks>
     private void StartPositionRetry()
     {
-        // 已经摆好了就不用重试。
-        if (_positionRestored)
+        // 摆位阶段已经结束了就不用重试。
+        if (_placementSettled)
         {
             return;
         }
@@ -354,9 +452,15 @@ public class PickerWindow : Window
         _positionRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _positionRetryTimer.Tick += (_, _) =>
         {
-            // 每次重试都先试着摆一次；摆成功、或者试够次数了，就收工。
-            if (RestorePosition() || ++_positionRetryCount >= MaxPositionRetries)
+            // 每次重试都先试着摆一次。
+            var placed = RestorePosition();
+            // 摆成功、或者试够次数了，就收工。
+            if (placed || ++_positionRetryCount >= MaxPositionRetries)
             {
+                // 收工——不管摆成没摆成，摆位阶段到此为止。
+                // 放弃时更要立起这个标记：不立的话 ClampToScreen 会永远不干活，
+                // 之后主人把窗口拖出屏幕也没人管了。
+                _placementSettled = true;
                 _positionRetryTimer?.Stop();
                 _positionRetryTimer = null;
             }
@@ -366,6 +470,19 @@ public class PickerWindow : Window
 
     /// <summary>把 Avalonia 的屏幕矩形换成纯计算层的形式。</summary>
     private static ScreenArea ToArea(PixelRect rect) => new(rect.X, rect.Y, rect.Width, rect.Height);
+
+    /// <summary>当前所有屏幕的矩形，用来判断「记位置时那块屏幕还在不在」。</summary>
+    private IReadOnlyList<ScreenArea> CurrentScreenAreas()
+    {
+        var areas = new List<ScreenArea>();
+        foreach (var screen in Screens.All)
+        {
+            areas.Add(ToArea(screen.Bounds));
+        }
+
+        return areas;
+    }
+
     /// <summary>挑出窗口所在的屏幕。</summary>
     private Avalonia.Platform.Screen? PickScreen() =>
         Screens.ScreenFromWindow(this)
@@ -385,6 +502,17 @@ public class PickerWindow : Window
     /// </remarks>
     private void ClampToScreen()
     {
+        // 喵~防御：摆位阶段还没结束之前一律不夹。那段时间拿到的屏幕信息可能是假的
+        // （非空、但尺寸是占位值），拿它夹取会把「还没恢复好的位置」钉到那个假屏幕上——
+        // 之后重试成功也没用了，位置已经被改过。这正是
+        // 「开机后悬浮钮位置不对、单独重启 ClassIsland 又正常」的成因：
+        // 单独重启时系统早就绪，屏幕信息是真的，所以看不出问题。
+        // 摆位阶段在 RestorePosition 摆成功后（或重试放弃时）结束。
+        if (!_placementSettled)
+        {
+            return;
+        }
+
         var screen = PickScreen();
         if (screen is null)
         {
@@ -405,11 +533,37 @@ public class PickerWindow : Window
         }
     }
 
-    /// <summary>把当前位置写回设置。</summary>
+    /// <summary>把当前位置、以及当前位置所在屏幕的尺寸一起写回设置。</summary>
+    /// <remarks>
+    /// <b>只有「位置确实摆对了」或者「主人自己拖动过」时才记。</b>
+    /// 窗口刚建出来时停在系统给的默认位置 (0,0)，那会儿屏幕信息也可能还没就绪。
+    /// 这时候记下来的就是 (0,0)，一存盘就把上一次存好的位置覆盖掉了——
+    /// 下次开机读到 (0,0)、继续存 (0,0)，就此卡死在屏幕左上角，自己永远好不了。
+    /// <para/>
+    /// <b>这正是 2026-09-16 主人报的「开机后悬浮钮跑到左上角、只重启 ClassIsland 又正常」。</b>
+    /// 单独重启时屏幕信息立刻可用，摆位一次就成功，所以看不出问题；
+    /// 开机那次屏幕信息迟到，摆位失败 → 位置停在 (0,0) → 退出时把 (0,0) 存了进去。
+    /// </remarks>
     public void CapturePosition()
     {
+        // 喵~防御：位置还没被确认过就不记。记下来的是坏值，比不记更糟——
+        // 不记只是这一次开机位置不对，记了就是下一次也一起坏。
+        if (!_positionTrustworthy)
+        {
+            return;
+        }
+
         _settings.WindowX = Position.X;
         _settings.WindowY = Position.Y;
+
+        // 顺手记下这块屏幕的尺寸，用来在下次启动时判断分辨率有没有变过。
+        // 喵~防御：拿不到屏幕信息时不覆盖已有的记录——覆盖成 0 会让下次启动
+        // 误判成「分辨率变过了」而白白重置一次位置。
+        if (PickScreen() is { } screen)
+        {
+            _settings.WindowScreenWidth = screen.Bounds.Width;
+            _settings.WindowScreenHeight = screen.Bounds.Height;
+        }
     }
 
     #endregion
@@ -517,6 +671,8 @@ public class PickerWindow : Window
         else if (_dragging)
         {
             _dragging = false;
+            // 主人亲手摆的位置，当然可信——不管前面自动摆位有没有成功。
+            _positionTrustworthy = true;
             CapturePosition();
             SettingsChanged?.Invoke(this, EventArgs.Empty);
         }

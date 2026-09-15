@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace ClassIsland.RandomPicker.Services;
 
@@ -50,6 +51,51 @@ internal static class WindowPlacement
     public static bool IsUsable(ScreenArea area, double scaling) =>
         // 喵~防御：宽或高是 0（甚至负数）说明显示器信息还没探到。
         area.Width > 0 && area.Height > 0 && IsScalingSane(scaling);
+
+    /// <summary>
+    /// 记下位置时的那块屏幕，现在还找得到吗？
+    /// </summary>
+    /// <param name="recordedWidth">记下位置时那块屏幕的宽度，物理像素。</param>
+    /// <param name="recordedHeight">高度，物理像素。</param>
+    /// <param name="screens">当前所有屏幕。</param>
+    /// <returns>还有任意一块屏幕的尺寸和记录的一致时返回 true。</returns>
+    /// <remarks>
+    /// 返回 false 表示分辨率变过了（换了显示器、改了分辨率、接了投影仪），
+    /// 记下来的坐标在新屏幕上未必还有意义，调用方应当回到默认位置。
+    /// <para/>
+    /// <b>判据是「任意一块对得上」，不是「当前这块对得上」。</b>
+    /// 双屏时窗口摆在副屏上，开机那一瞬间窗口还在原点，
+    /// 按当前屏幕算会拿主屏的尺寸去比副屏记下的值——什么都没变，位置却被重置了。
+    /// <para/>
+    /// 喵~防御：没记录过尺寸（<see cref="int.MinValue"/>）时返回 true。
+    /// 老版本的配置文件里只有坐标、没有尺寸，那种情况按「没变过」处理，
+    /// 免得升级一次就把主人摆好的位置重置掉。
+    /// </remarks>
+    public static bool MatchesAnyScreen(int recordedWidth, int recordedHeight,
+        IReadOnlyList<ScreenArea>? screens)
+    {
+        if (recordedWidth == int.MinValue || recordedHeight == int.MinValue)
+        {
+            return true;
+        }
+
+        // 喵~防御：一块屏幕都拿不到（显示器信息还没就绪）时当作「还判断不了」，
+        // 返回 true 让调用方留着原位置——位置没摆对只是不好看，重置错了是坏掉。
+        if (screens is null || screens.Count == 0)
+        {
+            return true;
+        }
+
+        foreach (var screen in screens)
+        {
+            if (screen.Width == recordedWidth && screen.Height == recordedHeight)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// 把窗口位置夹进屏幕里。

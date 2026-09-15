@@ -79,10 +79,28 @@ public class PickerSettings
     /// <summary>中央大字停留秒数。</summary>
     public double RevealSeconds { get; set; } = 2.5;
 
-    /// <summary>悬浮窗位置（物理像素）。NaN 表示还没摆过，用默认位置。</summary>
+    /// <summary>悬浮窗位置（物理像素）。int.MinValue 表示还没摆过，用默认位置。</summary>
     public int WindowX { get; set; } = int.MinValue;
 
+    /// <summary>悬浮窗位置的纵坐标（物理像素）。没摆过时同 <see cref="WindowX"/>。</summary>
     public int WindowY { get; set; } = int.MinValue;
+
+    /// <summary>
+    /// 记下 <see cref="WindowX"/>/<see cref="WindowY"/> 时，那块屏幕的宽度（物理像素）。
+    /// </summary>
+    /// <remarks>
+    /// <b>光存坐标是不够的。</b>屏幕分辨率换过之后，同一组坐标在新屏幕上可能落到屏幕外、
+    /// 或者跑到跟原来完全不同的地方去。有了这个宽度就能判断「记下位置时的屏幕还在不在」：
+    /// 当<b>所有</b>屏幕的尺寸都和它不一样时，说明分辨率变过了，坐标作废，回到默认位置。
+    /// <para/>
+    /// 比对的是「所有屏幕里有没有一块尺寸相同的」，而不是「当前这块屏幕尺寸一样吗」——
+    /// 后者在双屏下会误判：窗口摆在副屏上时，开机那一瞬间窗口还在原点，
+    /// 按当前屏幕算会拿主屏的尺寸去比副屏记下的值，明明什么都没变却把位置重置了。
+    /// </remarks>
+    public int WindowScreenWidth { get; set; } = int.MinValue;
+
+    /// <summary>记下位置时那块屏幕的高度（物理像素）。判定规则见 <see cref="WindowScreenWidth"/>。</summary>
+    public int WindowScreenHeight { get; set; } = int.MinValue;
 
     /// <summary>「不重复」模式下本轮已经抽到过的人。</summary>
     public List<string> DrawnThisRound

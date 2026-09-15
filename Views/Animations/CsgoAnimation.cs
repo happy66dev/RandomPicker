@@ -175,26 +175,6 @@ internal sealed class CsgoAnimation : RevealAnimationBase
         // 指针（固定在正中央）底下是第几块。几何判定完全交给 CsgoTrack，和排片表同源。
         var centerIndex = CsgoTrack.IndexAtOffset(offset, _slotWidth, _gap, width);
 
-        // 指针下那一块要显示哪个品质。停稳之后才是中选者真正摇出来的那个，
-        // 之前是轨道上那一份装饰值——和方块用的是同一条规则，绝不提前剧透。
-        // 喵~防御：rarities 理论上和 track 一样长，长度对不上时（计划被改坏）
-        // 退回最常见那一档，而不是越界。
-        var centerRarity = centerIndex >= 0 && centerIndex < _rarities.Count
-            ? _rarities[centerIndex]
-            : ItemRarity.MilSpec;
-        var revealedRarity = settled ? _winnerRarity : centerRarity;
-
-        // 整块背景也跟着品质走：还没停稳时用指针下那一块的装饰品质，方块滚过去时底色一路换色；
-        // 停稳之后换成中选者真正的品质并加深——「开出来了」这件事整个画面都在说。
-        // 底色本身压得比方块暗，方块才立得起来。
-        var backdropBase = Color.FromRgb(0x14, 0x14, 0x1A);
-        var backdropTint = settled ? 0.46 : 0.20;
-        context.DrawRectangle(
-            new SolidColorBrush(RarityColors.Mix(backdropBase, RarityColors.ColorOf(revealedRarity), backdropTint)),
-            null,
-            new Rect(0, 0, width, height),
-            height * 0.09, height * 0.09);
-
         for (var i = 0; i < _track.Count; i++)
         {
             // 这一块左边缘在屏幕上的位置。
@@ -224,15 +204,17 @@ internal sealed class CsgoAnimation : RevealAnimationBase
                 : (i < _rarities.Count ? _rarities[i] : ItemRarity.MilSpec);
             var rarityColor = RarityColors.ColorOf(rarity);
 
-            // 底色：暗底往品质色上偏一点。停稳的中选块偏得最多，像被点亮了。
-            // 底色比方块后面那层背景再亮一档，方块才从背景里浮出来。
-            var tint = revealed ? 0.34 : 0.14;
+            // 底色：暗底往品质色上偏。停稳的中选块偏得最多，像被点亮了。
+            // 2026-09-16 主人要求「品质色改明显明亮一点」，偏向比例因此从三成提到六成：
+            // 原来五个方块并排几乎都是一样的深灰，扫一眼认不出哪块是什么品质。
+            // 提亮底色不影响读名字——文字是白的、描边是品质色，都压得住。
+            var tint = revealed ? 0.62 : 0.30;
             var background = new SolidColorBrush(
-                RarityColors.Mix(Color.FromRgb(0x22, 0x22, 0x2A), rarityColor, tint));
-            // 描边用品质色：停稳后实心描边，滚动中只是浅浅一层。
+                RarityColors.Mix(Color.FromRgb(0x2A, 0x2A, 0x34), rarityColor, tint));
+            // 描边用品质色：停稳后实心描边，滚动中按离指针的距离淡一层。
             IBrush border = revealed
                 ? new SolidColorBrush(rarityColor)
-                : new SolidColorBrush(rarityColor, isCenter ? 0.62 : 0.34);
+                : new SolidColorBrush(rarityColor, isCenter ? 0.85 : 0.52);
             // 文字：停稳后直接用品质色，其余保持白色。
             IBrush textBrush = revealed ? new SolidColorBrush(rarityColor) : Brushes.White;
 
