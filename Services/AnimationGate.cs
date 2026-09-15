@@ -5,46 +5,21 @@ using ClassIsland.RandomPicker.Models;
 namespace ClassIsland.RandomPicker.Services;
 
 /// <summary>
-/// 动画开关与时长：决定「这次到底播不播」以及「播多久」。
+/// 动画时长：把配置里的秒数夹到合理的区间。
 /// </summary>
 /// <remarks>
-/// 两件事：一是尊重 ClassIsland 自己的动画设置（用户在宿主里关掉动画时插件必须跟着安静），
-/// 二是把配置里的秒数夹到合理区间，免得手改出来的 0、负数或 NaN 把动画变成永远播不完。
+/// <b>这里只管「播多久」，不管「播不播」。</b>
+/// <para/>
+/// 「播不播」曾经由这里的一个 <c>Resolve</c> 方法决定，它会读宿主的
+/// <c>IThemeService.AnimationLevel</c>，在 ClassIsland 关掉动画时把插件一起掐安静。
+/// 2026-09-15 主人决定把那条路拆掉：<b>动画是这个功能本身，不是界面装饰</b>，
+/// ClassIsland 的「动画级别」管的是它自己的界面过渡，关掉它不该连累抽选表演。
+/// 现在唯一能关掉动画的地方是插件右键菜单里的「无动画」。
+/// 这条政策有两条测试钉着（见 <c>AnimationGateTests</c>），其中一条会在
+/// 程序集元数据里扫 <c>IThemeService</c>，防止有人把它接回来。
 /// </remarks>
 internal static class AnimationGate
 {
-    /// <summary>
-    /// 按宿主的动画开关把用户选的样式降级。
-    /// </summary>
-    /// <param name="requested">用户在插件里选的样式。</param>
-    /// <param name="animationLevel">宿主的动画等级：0 = 关、1 = 基础、2 = 全部。</param>
-    /// <param name="transientDisabled">宿主持否处于「临时禁用动画」状态。</param>
-    /// <returns>实际该播的样式；该安静时返回 <see cref="RevealAnimationStyle.None"/>。</returns>
-    /// <remarks>
-    /// <b>判据是「等级 &gt;= 1」，不是「&gt;= 2」。</b>
-    /// 宿主的默认动画等级就是 1（<c>ClassIsland/Models/Settings.cs</c> 里初始化为 1），
-    /// 写成 <c>&gt;= 2</c> 会让默认安装下动画永远不播——而且在开发机上把等级调到 2 试的时候
-    /// 完全看不出问题。宿主自己用 <c>&gt;= 1</c> 的先例见 <c>DrawerHost.axaml.cs</c>。
-    /// </remarks>
-    public static RevealAnimationStyle Resolve(RevealAnimationStyle requested,
-        int animationLevel, bool transientDisabled)
-    {
-        // 用户自己在插件里选了「无动画」，那就没什么可商量了。
-        if (requested == RevealAnimationStyle.None)
-        {
-            return RevealAnimationStyle.None;
-        }
-
-        // 宿主关掉了动画，或者正在临时禁用动画：插件跟着安静，直接出结果。
-        if (transientDisabled || animationLevel < 1)
-        {
-            return RevealAnimationStyle.None;
-        }
-
-        // 其余情况照用户选的播。
-        return requested;
-    }
-
     /// <summary>
     /// 这段动画实际要播多久。
     /// </summary>

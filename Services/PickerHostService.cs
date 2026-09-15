@@ -4,7 +4,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
-using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Core.Models.Notification;
 using ClassIsland.RandomPicker.Models;
 using ClassIsland.RandomPicker.Views;
@@ -277,19 +276,19 @@ public class PickerHostService : IHostedService
     /// <param name="note">附带说明，比如从拍照模式退回来的原因。</param>
     /// <remarks>
     /// <b>动画完全不参与抽选</b>：名字在这里之前就已经定好了，这段代码只决定「怎么演」。
-    /// 所以任何一步出问题（宿主动画被关掉、名单数据不满足这个样式、时长配置被改坏），
+    /// 所以任何一步出问题（名单数据不满足这个样式、时长配置被改坏），
     /// 都可以放心地退化成「直接出结果」，不会影响公平性。
     /// </remarks>
     private void StartAnimation(string name, string? note)
     {
-        // 尊重宿主自己的动画开关：用户在 ClassIsland 里关掉动画时，插件必须跟着安静。
-        var style = AnimationGate.Resolve(_settings.AnimationStyle,
-            IThemeService.AnimationLevel, IThemeService.IsTransientDisabled);
+        // 只认插件自己的设置：宿主的「动画级别」不参与判断。
+        // 2026-09-15 主人定的——动画是这个功能本身，不是界面装饰，
+        // ClassIsland 关掉自己的界面过渡不该连累抽选表演。
+        // 想彻底关掉，在右键菜单里选「无动画」；那条路下面会被 Build 判成 null。
+        var style = _settings.AnimationStyle;
 
         // 按样式造排片表；数据不满足要求时返回 null（比如名单里有超过四个字的名字却选了老虎机）。
-        var plan = style == RevealAnimationStyle.None
-            ? null
-            : RevealAnimationPlanner.Build(style, TextRoster.Names, name, _settings);
+        var plan = RevealAnimationPlanner.Build(style, TextRoster.Names, name, _settings);
 
         // 不播动画这条路：直接出结果。
         if (plan is null)

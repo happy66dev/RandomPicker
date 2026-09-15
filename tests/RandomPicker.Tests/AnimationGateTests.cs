@@ -1,71 +1,119 @@
 using System;
+using System.IO;
+using System.Text;
 using ClassIsland.RandomPicker.Models;
 using ClassIsland.RandomPicker.Services;
 
 namespace ClassIsland.RandomPicker.Tests;
 
 /// <summary>
-/// 动画开关与时长解析的测试。
+/// 动画时长解析的测试，外加一条「谁在管动画开不开」的政策守卫。
 /// </summary>
 /// <remarks>
-/// 这里最重要的不是「功能对不对」，而是<b>玩家关掉动画时插件必须安静</b>，
-/// 以及<b>默认安装下动画必须真的会播</b>——后者特别容易被写错，见下面那条测试的说明。
+/// 这里原来有一组「按 ClassIsland 的动画等级降级」的测试。2026-09-15 主人决定改政策：
+/// <b>插件动画不再受宿主的「动画级别」管制</b>——动画是这个功能本身，不是界面装饰，
+/// ClassIsland 关掉自己的界面过渡不该连累抽选表演。想彻底关掉，在右键菜单里选「无动画」。
+/// 于是那一组测试连着被测的 <c>AnimationGate.Resolve</c> 一起删了，
+/// 换成下面两条：一条钉「唯一的关闭方式是选无动画」，
+/// 一条用二进制扫描钉「插件里不许再出现 IThemeService」。
 /// </remarks>
 public sealed class AnimationGateTests
 {
     /// <summary>一个默认设置，各测试按需改写其中一两项。</summary>
     private static PickerSettings DefaultSettings => new();
 
-    #region 降级判定
+    /// <summary>测试用名单。</summary>
+    private static readonly string[] Names = ["张三", "李四", "王五"];
 
+    #region 谁能关掉动画
+
+    /// <summary>
+    /// 唯一能关掉动画的是插件自己的「无动画」，另外四种都一定造得出排片表。
+    /// </summary>
+    /// <remarks>
+    /// 这条是上面那段政策在行为上的样子：没有任何外部状态参与判断，
+    /// 所以「选了某一种却不播」只可能是数据不满足该样式（比如老虎机遇上超长名字），
+    /// 而不可能是宿主那边某个开关悄悄把动画掐了。
+    /// </remarks>
     [Fact]
-    public void Resolve_WhenUserChoseNone_StaysNone()
+    public void OnlyTheNoneChoiceTurnsTheAnimationOff()
     {
-        // 用户自己选了「无动画」，宿主的开关开着也一样不播。
-        Assert.Equal(RevealAnimationStyle.None,
-            AnimationGate.Resolve(RevealAnimationStyle.None, animationLevel: 2, transientDisabled: false));
+        var settings = DefaultSettings;
+
+        // 选「无动画」→ 没有排片表，直接出结果。
+        Assert.Null(RevealAnimationPlanner.Build(RevealAnimationStyle.None, Names, "张三", settings));
+
+        // 其余四种 → 一定造得出排片表。
+        foreach (var style in new[]
+                 {
+                     RevealAnimationStyle.Scroll, RevealAnimationStyle.Csgo,
+                     RevealAnimationStyle.Slot, RevealAnimationStyle.Wheel
+                 })
+        {
+            Assert.NotNull(RevealAnimationPlanner.Build(style, Names, "张三", settings));
+        }
     }
 
+    /// <summary>
+    /// 插件程序集的元数据里不许再出现 <c>IThemeService</c>。
+    /// </summary>
+    /// <remarks>
+    /// 用二进制扫描而不是反射，是因为反射看不见方法体里的引用——
+    /// 只把 <c>IThemeService.AnimationLevel</c> 写回某个方法里，反射是查不出来的。
+    /// 而类型名一定会落在程序集的元数据字符串堆里，扫得到。
+    /// <para/>
+    /// 「动画级别」这个判据曾经写错过一次（记成「等级 &gt;= 2」，默认安装下动画永远不播），
+    /// 后来整条路都按主人的决定拆掉了。这条守卫的作用是：谁想把它接回来，先得删掉这条测试。
+    /// </remarks>
     [Fact]
-    public void Resolve_WhenAnimationLevelIsOne_KeepsRequestedStyle()
+    public void NothingInThePluginMentionsTheHostsAnimationService()
     {
-        // ★ 防回归的关键一条：宿主的默认动画等级就是 1。
-        // 如果谁把判据写成「等级 >= 2」，默认安装下所有动画都会静默消失，
-        // 而开发机上把等级调到 2 时又完全看不出问题——这条测试就是为了拦住这种改动。
-        Assert.Equal(RevealAnimationStyle.Wheel,
-            AnimationGate.Resolve(RevealAnimationStyle.Wheel, animationLevel: 1, transientDisabled: false));
+        // 被测程序集就是这个插件本体，测试运行时它就在测试输出目录里。
+        var dllPath = typeof(PickerSettings).Assembly.Location;
+        Assert.True(File.Exists(dllPath), $"找不到插件程序集：{dllPath}");
+
+        var bytes = File.ReadAllBytes(dllPath);
+        var needle = Encoding.UTF8.GetBytes("IThemeService");
+
+        Assert.False(ContainsBytes(bytes, needle),
+            "插件里又出现了对宿主 IThemeService 的引用。动画只该由插件自己的设置决定——" +
+            "要接回「尊重宿主的动画级别」，先想清楚为什么 2026-09-15 那条决定不成立。");
     }
 
-    [Fact]
-    public void Resolve_WhenAnimationLevelIsTwo_KeepsRequestedStyle()
+    /// <summary>在大段字节里找一小段字节，找到返回 true。</summary>
+    private static bool ContainsBytes(byte[] haystack, byte[] needle)
     {
-        // 等级 2（全部动画）当然要播。
-        Assert.Equal(RevealAnimationStyle.Csgo,
-            AnimationGate.Resolve(RevealAnimationStyle.Csgo, animationLevel: 2, transientDisabled: false));
-    }
+        // 喵~防御：空针会让下面的循环永远匹配，直接当作找不到。
+        if (needle.Length == 0 || haystack.Length < needle.Length)
+        {
+            return false;
+        }
 
-    [Fact]
-    public void Resolve_WhenAnimationLevelIsZero_ReturnsNone()
-    {
-        // 用户在 ClassIsland 里关掉了动画，插件必须跟着安静。
-        Assert.Equal(RevealAnimationStyle.None,
-            AnimationGate.Resolve(RevealAnimationStyle.Scroll, animationLevel: 0, transientDisabled: false));
-    }
+        for (var i = 0; i <= haystack.Length - needle.Length; i++)
+        {
+            // 先比第一个字节再比其余，绝大多数位置会在第一步就被排除。
+            if (haystack[i] != needle[0])
+            {
+                continue;
+            }
 
-    [Fact]
-    public void Resolve_WhenTransientDisabled_ReturnsNone()
-    {
-        // 宿主临时禁用动画期间（比如正在做别的重要动画）同样要安静。
-        Assert.Equal(RevealAnimationStyle.None,
-            AnimationGate.Resolve(RevealAnimationStyle.Slot, animationLevel: 2, transientDisabled: true));
-    }
+            var matched = true;
+            for (var j = 1; j < needle.Length; j++)
+            {
+                if (haystack[i + j] != needle[j])
+                {
+                    matched = false;
+                    break;
+                }
+            }
 
-    [Fact]
-    public void Resolve_WithNegativeAnimationLevel_ReturnsNone()
-    {
-        // 喵~防御：等级被手改成负数，按「关了动画」处理。
-        Assert.Equal(RevealAnimationStyle.None,
-            AnimationGate.Resolve(RevealAnimationStyle.Scroll, animationLevel: -1, transientDisabled: false));
+            if (matched)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     #endregion
