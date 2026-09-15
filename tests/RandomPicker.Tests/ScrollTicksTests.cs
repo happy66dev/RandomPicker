@@ -8,8 +8,9 @@ namespace ClassIsland.RandomPicker.Tests;
 /// 滚动名字样式的换帧时刻表测试。
 /// </summary>
 /// <remarks>
-/// 这段的核心不变量只有两条：各帧时长加起来<b>正好</b>等于配置的总时长，以及
-/// 时长逐帧变长（也就是线性减速）。两条塌了之一，用户看到的就是「动画比设置里写的长了一截」
+/// 这段的核心不变量有三条：各帧时长加起来<b>正好</b>等于配置的总时长、
+/// 时长逐帧变长（也就是先快后慢）、以及增长是<b>等比</b>的而非等差（也就是非线性）。
+/// 塌了任何一条，用户看到的就是「动画比设置里写的长了一截」
 /// 或者「说好的减速变成了匀速」。
 /// </remarks>
 public sealed class ScrollTicksTests
@@ -23,7 +24,7 @@ public sealed class ScrollTicksTests
     public void BuildIntervals_SumsToExactlyTheTotalDuration()
     {
         // 这是最关键的不变量：配置写了几秒，实际就得播几秒。
-        // 逐帧乘减速系数的老做法会累积误差，这里靠反解末项把它消掉。
+        // 逐帧乘减速系数的老做法会累积误差，这里靠反解首项把它消掉。
         foreach (var total in new[] { 0.5, 1.0, 2.5, 4.0, 7.3, 12.0, 20.0 })
         {
             var intervals = ScrollTicks.BuildIntervals(total);
@@ -34,7 +35,7 @@ public sealed class ScrollTicksTests
     [Fact]
     public void BuildIntervals_IsStrictlyIncreasing()
     {
-        // 线性减速：后一帧一定比前一帧停留得久。
+        // 先快后慢：后一帧一定比前一帧停留得久。
         var intervals = ScrollTicks.BuildIntervals(4.0);
 
         for (var i = 1; i < intervals.Length; i++)
@@ -42,6 +43,47 @@ public sealed class ScrollTicksTests
             Assert.True(intervals[i] > intervals[i - 1],
                 $"第 {i} 帧（{intervals[i]:F4}s）不比第 {i - 1} 帧（{intervals[i - 1]:F4}s）长，就不是减速了");
         }
+    }
+
+    [Fact]
+    public void BuildIntervals_GrowsGeometricallyNotLinearly()
+    {
+        // 这条把「非线性」钉死。
+        // 等差数列的相邻间隔之差是常数；等比数列的相邻间隔之<b>比</b>才是常数。
+        // 只用「严格递增」那一条是区分不出两者的——线性减速也严格递增，
+        // 但那正是被换掉的老做法。
+        var intervals = ScrollTicks.BuildIntervals(8.0);
+
+        for (var i = 2; i < intervals.Length; i++)
+        {
+            // 相邻两段增长率。
+            var previousRatio = intervals[i - 1] / intervals[i - 2];
+            var currentRatio = intervals[i] / intervals[i - 1];
+            // 等比数列下这两个比值是同一个常数（浮点误差范围内）。
+            Assert.True(Math.Abs(currentRatio - previousRatio) < 0.01,
+                $"第 {i} 段的增长倍数 {currentRatio:F4} 和第 {i - 1} 段的 {previousRatio:F4} 差太多，不是等比增长");
+            // 顺便确认它确实是「增长」而不是衰减。
+            Assert.True(currentRatio > 1.05, $"第 {i} 段的增长倍数只有 {currentRatio:F4}，减速太弱了");
+        }
+    }
+
+    [Fact]
+    public void BuildIntervals_LinearIntervals_WouldFailTheGeometricCheck()
+    {
+        // 反证：手搓一个等差数列，上面那条断言必须能识别出它不是等比。
+        // 没有这一条，「非线性」的断言可能只是碰巧成立。
+        var linear = new double[12];
+        for (var i = 0; i < linear.Length; i++)
+        {
+            // 从 0.02 线性涨到 0.30。
+            linear[i] = 0.02 + (0.30 - 0.02) * i / (linear.Length - 1);
+        }
+
+        // 等差数列相邻两段的增长倍数一直在变小（分母在变大），不是常数。
+        var firstRatio = linear[1] / linear[0];
+        var lastRatio = linear[^1] / linear[^2];
+        Assert.True(Math.Abs(firstRatio - lastRatio) > 0.01,
+            "等差数列的增长倍数居然被当成了常数，说明等比那条断言没有鉴别力");
     }
 
     [Fact]
@@ -55,10 +97,39 @@ public sealed class ScrollTicksTests
     }
 
     [Fact]
+    public void BuildIntervals_FirstTickIsShortEnoughToBlur()
+    {
+        // 开头必须快到看不清，否则就不像「飞快滚过」而像逐字念。
+        var intervals = ScrollTicks.BuildIntervals(4.0);
+
+        Assert.True(intervals[0] <= 0.04,
+            $"首帧停了 {intervals[0]:F4}s，太慢，开头不会糊成一片");
+    }
+
+    [Fact]
+    public void BuildIntervals_LastTickIsSlowEnoughToRead()
+    {
+        // 收尾必须慢到看得清最后那个名字。
+        var intervals = ScrollTicks.BuildIntervals(4.0);
+
+        Assert.True(intervals[^1] >= 0.15,
+            $"末帧只停了 {intervals[^1]:F4}s，还没看清就没了");
+    }
+
+    [Fact]
     public void BuildIntervals_HasAtLeastTwoTicks()
     {
         // 至少两帧才谈得上「滚动」。
         Assert.True(ScrollTicks.BuildIntervals(4.0).Length >= 2);
+    }
+
+    [Fact]
+    public void BuildIntervals_WithTinyDuration_StillSumsToTotal()
+    {
+        // 时长特别短时仍然要满足「总和精确等于配置值」这条底线。
+        var intervals = ScrollTicks.BuildIntervals(0.05);
+
+        Assert.Equal(0.05, intervals.Sum(), 6);
     }
 
     [Fact]
@@ -97,26 +168,6 @@ public sealed class ScrollTicksTests
     {
         // 无穷大同理。
         Assert.Single(ScrollTicks.BuildIntervals(double.PositiveInfinity));
-    }
-
-    [Fact]
-    public void BuildIntervals_WithTinyDuration_StillSumsToTotal()
-    {
-        // 时长特别短时等差数列不成立（反解出的末项比首项还短），
-        // 这时退化成等间隔，但总和仍然必须精确等于配置值。
-        var intervals = ScrollTicks.BuildIntervals(0.05);
-
-        Assert.Equal(0.05, intervals.Sum(), 6);
-    }
-
-    [Fact]
-    public void BuildIntervals_WithBadCustomIntervals_UsesDefaults()
-    {
-        // 喵~防御：首尾间隔被传成 0 或负数时不能算出乱序的序列，用默认值顶上。
-        var intervals = ScrollTicks.BuildIntervals(4.0, firstSeconds: 0, lastSeconds: -1);
-
-        Assert.Equal(4.0, intervals.Sum(), 6);
-        Assert.True(intervals[^1] > intervals[0]);
     }
 
     #endregion

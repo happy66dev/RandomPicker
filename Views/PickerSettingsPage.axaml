@@ -98,6 +98,56 @@
             </controls:SettingsExpander>
 
             <Separator Margin="0 12 0 4"/>
+            <ci:IconText Glyph="&#xE735;" Text="CSGO 名字品质" Margin="0 0 0 4"/>
+
+            <TextBlock Classes="l-instructive" TextWrapping="Wrap"
+                       Text="只影响 CSGO 开箱动画里方块的颜色，不影响抽到谁——中选者在点下去那一刻就已经定好了，品质是之后单独摇的。默认是 CS:GO 开箱那套分布：军规级 79.92% / 受限级 15.98% / 保密级 3.20% / 隐秘级 0.64% / 罕见特殊物品 0.26%。"/>
+
+            <controls:SettingsExpander IconSource="{ci:FluentIconSource &#xE735;}"
+                                       Header="品质概率"
+                                       Description="{Binding RaritySummary}">
+                <controls:SettingsExpander.Footer>
+                    <StackPanel Orientation="Vertical" Spacing="4">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Width="96" VerticalAlignment="Center" Text="{Binding RarityNames[0]}"/>
+                            <Slider Width="150" Minimum="0" Maximum="100" TickFrequency="0.01"
+                                    IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                    Value="{Binding RarityWeight0, Mode=TwoWay}"/>
+                            <TextBlock Width="56" VerticalAlignment="Center" Text="{Binding RarityWeight0, StringFormat='{}{0:0.##}%'}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Width="96" VerticalAlignment="Center" Text="{Binding RarityNames[1]}"/>
+                            <Slider Width="150" Minimum="0" Maximum="100" TickFrequency="0.01"
+                                    IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                    Value="{Binding RarityWeight1, Mode=TwoWay}"/>
+                            <TextBlock Width="56" VerticalAlignment="Center" Text="{Binding RarityWeight1, StringFormat='{}{0:0.##}%'}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Width="96" VerticalAlignment="Center" Text="{Binding RarityNames[2]}"/>
+                            <Slider Width="150" Minimum="0" Maximum="100" TickFrequency="0.01"
+                                    IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                    Value="{Binding RarityWeight2, Mode=TwoWay}"/>
+                            <TextBlock Width="56" VerticalAlignment="Center" Text="{Binding RarityWeight2, StringFormat='{}{0:0.##}%'}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Width="96" VerticalAlignment="Center" Text="{Binding RarityNames[3]}"/>
+                            <Slider Width="150" Minimum="0" Maximum="100" TickFrequency="0.01"
+                                    IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                    Value="{Binding RarityWeight3, Mode=TwoWay}"/>
+                            <TextBlock Width="56" VerticalAlignment="Center" Text="{Binding RarityWeight3, StringFormat='{}{0:0.##}%'}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Width="96" VerticalAlignment="Center" Text="{Binding RarityNames[4]}"/>
+                            <Slider Width="150" Minimum="0" Maximum="100" TickFrequency="0.01"
+                                    IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                    Value="{Binding RarityWeight4, Mode=TwoWay}"/>
+                            <TextBlock Width="56" VerticalAlignment="Center" Text="{Binding RarityWeight4, StringFormat='{}{0:0.##}%'}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </controls:SettingsExpander.Footer>
+            </controls:SettingsExpander>
+
+            <Separator Margin="0 12 0 4"/>
             <ci:IconText Glyph="&#xE722;" Text="拍照抽人" Margin="0 0 0 4"/>
 
             <TextBlock Classes="l-instructive" TextWrapping="Wrap"

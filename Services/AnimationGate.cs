@@ -132,9 +132,14 @@ internal static class RevealAnimationPlanner
     /// <param name="names">当前名单。</param>
     /// <param name="winner">中选者。</param>
     /// <param name="settings">插件设置。</param>
+    /// <param name="pickIndexSelector">
+    /// 从 0 到 n-1 里挑一个下标的函数，用来抽帧里显示的名字、装饰用品质、以及转盘扇区。
+    /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
+    /// </param>
     /// <returns>排片表；数据不满足这个样式的要求时返回 <c>null</c>，由上层降级成不播动画。</returns>
     public static RevealAnimationPlan? Build(RevealAnimationStyle style,
-        IReadOnlyList<string>? names, string? winner, PickerSettings settings)
+        IReadOnlyList<string>? names, string? winner, PickerSettings settings,
+        Func<int, int>? pickIndexSelector = null)
     {
         // 喵~防御：设置对象不允许为 null。
         ArgumentNullException.ThrowIfNull(settings);
@@ -151,7 +156,7 @@ internal static class RevealAnimationPlanner
             {
                 // 滚动名字：只要名单里有中选者就能播。
                 var duration = AnimationGate.DurationOf(style, settings);
-                return ScrollTicks.BuildPlan(names, winner, duration.TotalSeconds);
+                return ScrollTicks.BuildPlan(names, winner, duration.TotalSeconds, pickIndexSelector);
             }
 
             case RevealAnimationStyle.Csgo:
@@ -163,8 +168,12 @@ internal static class RevealAnimationPlanner
                 var viewportWidth = settings.RevealFontSize * ViewportWidthRatio;
                 var viewportHeight = slotHeight * ViewportHeightRatio;
                 var duration = AnimationGate.DurationOf(style, settings);
+                // 中选者的品质在这里摇一次。它只决定方块的颜色，
+                // 和「铁面无私地抽到谁」毫无关系——两者是各自独立的随机。
+                var winnerRarity = ItemRarityTable.Roll(settings.RarityWeights, pickIndexSelector);
                 return CsgoTrack.Build(names, winner,
-                    viewportWidth, viewportHeight, slotWidth, slotHeight, gap, duration);
+                    viewportWidth, viewportHeight, slotWidth, slotHeight, gap, duration,
+                    winnerRarity, settings.RarityWeights, pickIndexSelector);
             }
 
             case RevealAnimationStyle.Slot:
@@ -173,7 +182,7 @@ internal static class RevealAnimationPlanner
                 // 这种名单上回退到滚动名字——总比演一个残缺的名字强。
                 if (!SlotMachine.IsUsable(names))
                 {
-                    return Build(RevealAnimationStyle.Scroll, names, winner, settings);
+                    return Build(RevealAnimationStyle.Scroll, names, winner, settings, pickIndexSelector);
                 }
 
                 // 格数 = 最长名字的字数（夹在 2~4），总时长按格数摊成「每格多少秒」。
@@ -188,7 +197,8 @@ internal static class RevealAnimationPlanner
             {
                 // 「滑进扇区」那一下是固定的，配置里的时长只管转到边界那一段。
                 var duration = AnimationGate.DurationOf(style, settings) - WheelLayout.SlideDuration;
-                return WheelLayout.Build(names, winner, duration);
+                return WheelLayout.Build(names, winner, duration,
+                    pickIndexSelector: pickIndexSelector);
             }
 
             default:

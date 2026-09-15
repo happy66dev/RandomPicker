@@ -143,6 +143,10 @@ public class PickerWindow : Window
     /// <summary>用户请求抽一个人。</summary>
     public event EventHandler? PickRequested;
 
+    /// <summary>用户请求跳过正在播的抽选动画。</summary>
+    /// <remarks>只在钮处于「跳」的状态时才会触发；跳过只是不看表演，不改变谁被抽中。</remarks>
+    public event EventHandler? SkipRequested;
+
     /// <summary>设置被菜单改动，需要持久化。</summary>
     public event EventHandler? SettingsChanged;
 
@@ -235,9 +239,10 @@ public class PickerWindow : Window
                 return;
 
             case PickerBusyKind.Animating:
-                // 动画途中：这期间点击会被忽略，钮上要说清楚正在抽。
-                _label.Text = "…";
-                _counter.Text = "抽选中";
+                // 动画途中：这一下点击不再是「再抽一次」，而是「跳过动画」。
+                // 钮上直接写「跳」，用户一眼就知道点下去能跳过，不用等它慢慢播完。
+                _label.Text = "跳";
+                _counter.Text = "跳过";
                 return;
 
             default:
@@ -517,7 +522,16 @@ public class PickerWindow : Window
         }
         else if (e.InitialPressMouseButton is MouseButton.Left or MouseButton.None)
         {
-            PickRequested?.Invoke(this, EventArgs.Empty);
+            // 动画正在播的时候，这一下不是「再抽一次」，而是「跳过动画」——
+            // 钮上此刻显示的也是「跳」。抽选本身早就定好了，跳过只是不看表演。
+            if (_busy == PickerBusyKind.Animating)
+            {
+                SkipRequested?.Invoke(this, EventArgs.Empty);
+            }
+            else
+            {
+                PickRequested?.Invoke(this, EventArgs.Empty);
+            }
         }
 
         e.Handled = true;

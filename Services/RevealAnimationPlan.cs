@@ -41,6 +41,8 @@ internal sealed record ScrollPlan(
 /// <param name="ViewportWidth">可视区宽度，单位：逻辑像素。</param>
 /// <param name="ViewportHeight">可视区高度，单位：逻辑像素。</param>
 /// <param name="TargetOffset">滚到终点时的平移量，单位：逻辑像素。</param>
+/// <param name="Rarities">每个方块对应的品质，下标和 <paramref name="Track"/> 一一对应。</param>
+/// <param name="WinnerRarity">中选者的品质。它<b>只影响表演</b>，不影响抽到谁。</param>
 /// <param name="Total">总时长。</param>
 /// <param name="Winner">中选者。</param>
 internal sealed record CsgoPlan(
@@ -52,6 +54,8 @@ internal sealed record CsgoPlan(
     double ViewportWidth,
     double ViewportHeight,
     double TargetOffset,
+    IReadOnlyList<ItemRarity> Rarities,
+    ItemRarity WinnerRarity,
     TimeSpan Total,
     string Winner) : RevealAnimationPlan(Total, Winner);
 

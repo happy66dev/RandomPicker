@@ -10,19 +10,38 @@ namespace ClassIsland.RandomPicker.Services;
 /// </summary>
 /// <remarks>
 /// 玩法是中央大字飞速换名字，换着换着越来越慢，最后停在中选者上。
-/// 「越来越慢」实现成<b>线性减速</b>：相邻两次换名字的间隔排成一个等差数列，
-/// 首项短、末项长，全部加起来正好等于配置的总时长。
 /// <para/>
-/// 之所以离线算好整张表（而不是每一帧现乘一个减速系数），是为了让总时长精确可控：
+/// 「越来越慢」实现成<b>等比增长的间隔</b>：相邻两次换名字的间隔按固定倍数放大
+/// （<see cref="GrowthRatio"/>，默认 1.12）。
+/// <list type="bullet">
+/// <item>开头几十毫秒就换一帧，看着就是一片残影；</item>
+/// <item>中段变成几十上百毫秒，名字开始看得清；</item>
+/// <item>最后两帧之间有近半秒，稳稳停住。</item>
+/// </list>
+/// <para/>
+/// 为什么不用更容易想到的两条路：
+/// <list type="bullet">
+/// <item><b>等差数列</b>（间隔线性增长）：快慢变化太平缓，开头不够快、结尾不够慢，
+///       缺少「刹车」的层次。</item>
+/// <item><b>幂律时刻表</b>（第 i 帧在 总时长×(i/N)^k 那一刻出现）：看似更潮，
+///       但 k=2 时相邻间隔之差是常数，<b>又退化成等差数列</b>；要真非线性就得取 k≥3，
+///       而那会让开头几十帧全挤进几毫秒里，等于白演。</item>
+/// </list>
+/// 等比数列恰好避开了这两个坑。
+/// <para/>
+/// 时刻表离线算好（而不是每帧现乘一个系数），是为了让总时长精确可控：
 /// 逐帧乘系数会带累积误差，配上「停留 X 秒」之后总时间就对不上了。
 /// </remarks>
 internal static class ScrollTicks
 {
-    /// <summary>首帧间隔，单位：秒。够快才有「飞起来」的感觉。</summary>
-    public const double FirstIntervalSeconds = 0.035;
+    /// <summary>相邻两帧间隔的增长倍数。大了转得太狠、小了又不够「刹车」。</summary>
+    public const double GrowthRatio = 1.12;
 
-    /// <summary>末帧间隔，单位：秒。够慢才看得清最后几个名字。</summary>
-    public const double LastIntervalSeconds = 0.30;
+    /// <summary>希望第一帧停留多久，单位：秒。用来反推帧数——够短才是残影而不是逐字念。</summary>
+    public const double TargetFirstIntervalSeconds = 0.02;
+
+    /// <summary>至少两帧，不然「滚动」无从谈起。</summary>
+    public const int MinTicks = 2;
 
     /// <summary>帧数上限。总时长被拉到 20 秒时也不会算出上千帧。</summary>
     public const int MaxTicks = 240;
@@ -31,45 +50,40 @@ internal static class ScrollTicks
     /// 算出每一帧停留多久，单位：秒。
     /// </summary>
     /// <param name="totalSeconds">动画总时长，单位：秒。</param>
-    /// <param name="firstSeconds">第一帧停留多久。</param>
-    /// <param name="lastSeconds">最后一帧停留多久。</param>
     /// <returns>每一帧的时长，长度就是帧数。各项之和等于总时长。</returns>
-    public static double[] BuildIntervals(double totalSeconds,
-        double firstSeconds = FirstIntervalSeconds, double lastSeconds = LastIntervalSeconds)
+    /// <remarks>
+    /// 间隔一定<b>严格递增</b>，这就是「先快后慢」在数字上的定义；
+    /// 各项之和也一定<b>恰好等于</b>总时长，不然动画会比配置的长或短一截。
+    /// 这两条都有单测钉着。
+    /// </remarks>
+    public static double[] BuildIntervals(double totalSeconds)
     {
         // 喵~防御：总时长不是有限正数（配置被改成 0、负数、NaN 或 Infinity）时，
-        // 反解出来的帧数会是 0 或负数，后面取间隔就会越界。这里退化成「只有一帧」，
+        // 反推出来的帧数会是 0 或负数，后面取间隔就会越界。这里退化成「只有一帧」，
         // 效果等同于瞬间定格在中选者上，而不是崩溃或卡住。
         if (!double.IsFinite(totalSeconds) || totalSeconds <= 0)
         {
             return [0];
         }
 
-        // 首帧间隔本身也可能是坏值，坏了就用默认值顶上。
-        var first = double.IsFinite(firstSeconds) && firstSeconds > 0 ? firstSeconds : FirstIntervalSeconds;
-        // 末帧间隔同理。
-        var last = double.IsFinite(lastSeconds) && lastSeconds > 0 ? lastSeconds : LastIntervalSeconds;
+        // 帧数：让首项大致等于目标值。
+        // 等比数列首项 = 总和 × (q-1) / (q^N - 1)，把它当成公式解出 N。
+        var tickCount = (int)Math.Round(
+            Math.Log(1 + totalSeconds * (GrowthRatio - 1) / TargetFirstIntervalSeconds) / Math.Log(GrowthRatio));
+        tickCount = Math.Clamp(tickCount, MinTicks, MaxTicks);
 
-        // 等差数列求和公式反解帧数：和 = 帧数 × (首项 + 末项) / 2。
-        var tickCount = (int)Math.Round(2 * totalSeconds / (first + last));
-        // 至少 2 帧（不然「滚动」无从谈起），至多 MaxTicks 帧。
-        tickCount = Math.Clamp(tickCount, 2, MaxTicks);
+        // 再用实际的帧数把首项精确解出来：这样各项之和<b>恰好</b>等于总时长，
+        // 不会有四舍五入累计出来的「动画比配置长半秒」。
+        var first = totalSeconds * (GrowthRatio - 1) / (Math.Pow(GrowthRatio, tickCount) - 1);
 
-        // 反解末间隔：要让这些间隔加起来<b>正好</b>等于总时长，末项得按实际帧数回算，
-        // 否则四舍五入的误差会累积成「动画比配置长了半秒」。
-        var solvedLast = 2 * totalSeconds / tickCount - first;
-        // 喵~防御：总时长特别短时，反解出的末间隔会小于首间隔（甚至为负），
-        // 那等差数列就不成立了。这时退化成等间隔——每帧一样长，总和仍然精确等于配置值。
-        var useEven = solvedLast < first;
-        var actualFirst = useEven ? totalSeconds / tickCount : first;
-        var actualLast = useEven ? totalSeconds / tickCount : solvedLast;
-
-        // 逐项填等差数列。
+        // 逐帧填：每一项都是上一项乘公比。
         var intervals = new double[tickCount];
+        var current = first;
         for (var i = 0; i < tickCount; i++)
         {
-            // 第 i 项在首末之间线性插值：越靠后越长，这就是「线性减速」。
-            intervals[i] = actualFirst + (actualLast - actualFirst) * i / (tickCount - 1);
+            intervals[i] = current;
+            // 下一项按固定倍数放大。
+            current *= GrowthRatio;
         }
 
         return intervals;
@@ -92,8 +106,8 @@ internal static class ScrollTicks
         var intervals = BuildIntervals(totalSeconds);
         // 再按帧数挑出每一帧要显示的名字。
         var frames = BuildFrames(names, winner, intervals.Length, pickIndexSelector);
-        // 总时长取各帧时长之和：反解过的序列加起来正好等于配置值，
-        // 这里再求一次和是为了让「计划里写的时长」和「实际播的时长」永远一致。
+        // 总时长取各帧时长之和：幂律时刻表的末项就是总时长，这里再求一次和是为了让
+        // 「计划里写的时长」和「实际播的时长」永远一致。
         return new ScrollPlan(frames, intervals, TimeSpan.FromSeconds(intervals.Sum()), winner);
     }
 

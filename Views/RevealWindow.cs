@@ -50,6 +50,23 @@ public class RevealWindow : Window
     /// <summary>当前这段动画的取消令牌源。换一段就换一个新的。</summary>
     private CancellationTokenSource? _animationCts;
 
+    /// <summary>这一次取消是不是「用户点了跳过」。</summary>
+    /// <remarks>
+    /// 取消有两种完全相反的含义，得区分开：
+    /// <list type="bullet">
+    /// <item><b>跳过</b>：用户不想看表演了，要<b>立刻看到结果</b>——收尾照做。</item>
+    /// <item><b>别的取消</b>（要换下一段动画、窗口要关了）：绝不能碰进度属性，
+    ///       否则复用的控件会残留上一轮的结果。</item>
+    /// </list>
+    /// </remarks>
+    private bool _skipRequested;
+
+    /// <summary>
+    /// 立刻结束正在播的动画，直接定格出结果。
+    /// </summary>
+    /// <remarks>用户点了悬浮钮上的「跳」。中选者早就定好了，跳过只是不看表演。</remarks>
+    internal static void SkipAnimation() => _instance?.SkipCurrentAnimation();
+
     /// <summary>
     /// 播一段抽选动画，播完再出结果。
     /// </summary>
@@ -291,6 +308,8 @@ public class RevealWindow : Window
     {
         // 动画期间绝不能被「停留计时」关掉窗口。
         _closeTimer.Stop();
+        // 这一段还没开始播，先把「跳过」的标记清掉——上一段的标记不能漏到这一段来。
+        _skipRequested = false;
         // 上一段还在播的话先掐掉，位置让给新的这一段。
         CancelAnimation();
 
@@ -341,8 +360,9 @@ public class RevealWindow : Window
             // 喵~防御：动画自己出岔子绝不能把结果吞掉——下面照常收尾，用户该看到的名字一个不少。
         }
 
-        // 喵~防御：被取消时什么都不做。硬置终值会让这个复用的控件在下一轮里残留上一次的结果。
-        if (token.IsCancellationRequested)
+        // 喵~防御：被取消时一般什么都不做。硬置终值会让这个复用的控件在下一轮里残留上一次的结果。
+        // 「用户点了跳过」是唯一的例外：他要的就是立刻看到结果，所以照常往下走完收尾。
+        if (token.IsCancellationRequested && !_skipRequested)
         {
             return;
         }
@@ -366,6 +386,21 @@ public class RevealWindow : Window
         // 先断开引用再取消：取消会同步跑进上面那个 finally，那里会看令牌是不是被取消过。
         _animationCts = null;
         cts?.Cancel();
+    }
+
+    /// <summary>用户点了「跳」：取消这一段，但照常收尾出结果。</summary>
+    private void SkipCurrentAnimation()
+    {
+        // 喵~防御：没有动画在播（或者已经收完尾了）时没什么可跳的。
+        // 少了这道判断，收尾之后残留的令牌会让结束逻辑跑第二遍，结果和提醒都会发两次。
+        if (_animationCts is null)
+        {
+            return;
+        }
+
+        // 先立标记再取消：取消之后 <see cref="RunAnimationAsync"/> 会看到它是「跳过」而不是普通取消。
+        _skipRequested = true;
+        CancelAnimation();
     }
 
     /// <summary>缩一下再弹回来，给出「换了一个」的反馈，比原地换内容更容易察觉。</summary>

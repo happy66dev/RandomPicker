@@ -110,7 +110,7 @@ internal sealed class WheelAnimation : RevealAnimationBase
         {
             Duration = _holdDuration,
             FillMode = FillMode.Forward,
-            Easing = new CubicEaseOut()
+            Easing = RevealEasing.Decelerate
         };
         spin.Children.Add(new KeyFrame
         {
@@ -129,7 +129,7 @@ internal sealed class WheelAnimation : RevealAnimationBase
         {
             Duration = _slideDuration,
             FillMode = FillMode.Forward,
-            Easing = new BackEaseOut()
+            Easing = RevealEasing.Settle
         };
         slide.Children.Add(new KeyFrame
         {

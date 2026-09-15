@@ -34,6 +34,12 @@ internal sealed class CsgoAnimation : RevealAnimationBase
     /// <summary>轨道上的名字序列（名单重复展开若干轮）。</summary>
     private IReadOnlyList<string> _track = [];
 
+    /// <summary>每个方块对应的品质，下标和 <see cref="_track"/> 一一对应。</summary>
+    private IReadOnlyList<ItemRarity> _rarities = [];
+
+    /// <summary>中选者的品质。停稳之后要用它给中选那块上色。</summary>
+    private ItemRarity _winnerRarity = ItemRarity.MilSpec;
+
     /// <summary>一个方块的宽度，单位：逻辑像素。</summary>
     private double _slotWidth;
 
@@ -74,11 +80,14 @@ internal sealed class CsgoAnimation : RevealAnimationBase
         if (plan is not CsgoPlan csgo)
         {
             _track = [];
+            _rarities = [];
             _stageSize = default;
             return;
         }
 
         _track = csgo.Track;
+        _rarities = csgo.Rarities;
+        _winnerRarity = csgo.WinnerRarity;
         _slotWidth = csgo.SlotWidth;
         _slotHeight = csgo.SlotHeight;
         _gap = csgo.Gap;
@@ -102,8 +111,8 @@ internal sealed class CsgoAnimation : RevealAnimationBase
         {
             Duration = _planTotal,
             FillMode = FillMode.Forward,
-            // 强减速缓动：起手快、收尾一点点挪，才有「刹住」的手感。
-            Easing = new CubicEaseOut()
+            // 共用减速曲线：起手快、收尾一点点挪，才有「刹住」的手感。
+            Easing = RevealEasing.Decelerate
         };
 
         // 起点：还没开始滚。
@@ -170,18 +179,30 @@ internal sealed class CsgoAnimation : RevealAnimationBase
             // 指针下那一块始终满亮，其余按距离衰减到四成。
             var opacity = isCenter ? 1.0 : 0.4 + 0.6 * (1 - distance);
 
-            // 方块底色：和卡片的深色玻璃一个色系。
-            var background = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x2A));
-            // 停稳后中选者用强调色描边，其余方块描一条很淡的白边。
-            IBrush border = isCenter && settled
-                ? new SolidColorBrush(Accent)
-                : new SolidColorBrush(Colors.White, isCenter ? 0.42 : 0.16);
-            // 中选者停稳后文字也换成强调色。
-            IBrush textBrush = isCenter && settled ? new SolidColorBrush(Accent) : Brushes.White;
+            // 中选那一块，而且已经停稳：这是「开出来的东西」，要最亮。
+            var revealed = isCenter && settled;
+            // 这一块要显示哪个品质：中选那块用真正摇出来的，
+            // 其余用轨道上各自那份装饰值。喵~防御：rarities 理论上和 track 一样长，
+            // 长度对不上时（计划被改坏）退回最常见那一档，而不是越界。
+            var rarity = revealed
+                ? _winnerRarity
+                : (i < _rarities.Count ? _rarities[i] : ItemRarity.MilSpec);
+            var rarityColor = RarityColors.ColorOf(rarity);
+
+            // 底色：暗底往品质色上偏一点。停稳的中选块偏得最多，像被点亮了。
+            var tint = revealed ? 0.30 : 0.10;
+            var background = new SolidColorBrush(
+                RarityColors.Mix(Color.FromRgb(0x22, 0x22, 0x2A), rarityColor, tint));
+            // 描边用品质色：停稳后实心描边，滚动中只是浅浅一层。
+            IBrush border = revealed
+                ? new SolidColorBrush(rarityColor)
+                : new SolidColorBrush(rarityColor, isCenter ? 0.62 : 0.34);
+            // 文字：停稳后直接用品质色，其余保持白色。
+            IBrush textBrush = revealed ? new SolidColorBrush(rarityColor) : Brushes.White;
 
             using (context.PushOpacity(opacity))
             {
-                DrawSlot(context, rect, background, border, isCenter ? 2 : 1.2, _slotHeight * 0.16);
+                DrawSlot(context, rect, background, border, revealed ? 2.5 : 1.2, _slotHeight * 0.16);
                 // 名字画在方块里，放不下会自动缩字号。
                 DrawFittedText(context, _track[i],
                     rect.Deflate(new Thickness(_slotWidth * 0.08, _slotHeight * 0.12)),

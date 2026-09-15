@@ -33,10 +33,19 @@ internal static class CsgoTrack
     /// <param name="slotHeight">一个方块的高度。</param>
     /// <param name="gap">方块之间的间距。</param>
     /// <param name="total">动画总时长。</param>
+    /// <param name="winnerRarity">中选者的品质。只影响表演，不影响抽到谁。</param>
+    /// <param name="rarityWeights">各档品质的权重（百分数）。传 <c>null</c> 用默认那套。</param>
+    /// <param name="pickIndexSelector">
+    /// 从 0 到 n-1 里挑一个下标的函数，用来给轨道上<b>其他</b>方块摇装饰用的品质。
+    /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
+    /// </param>
     /// <returns>排片表；名单不合法或参数病态时返回 <c>null</c>（上层据此不播动画）。</returns>
     public static CsgoPlan? Build(IReadOnlyList<string>? names, string? winner,
         double viewportWidth, double viewportHeight,
-        double slotWidth, double slotHeight, double gap, TimeSpan total)
+        double slotWidth, double slotHeight, double gap, TimeSpan total,
+        ItemRarity winnerRarity = ItemRarity.MilSpec,
+        IReadOnlyList<double>? rarityWeights = null,
+        Func<int, int>? pickIndexSelector = null)
     {
         // 喵~防御：名单为空或中选者为空时没什么可滚的，直接作废这段动画。
         if (names is null || names.Count == 0 || string.IsNullOrEmpty(winner))
@@ -91,11 +100,20 @@ internal static class CsgoTrack
         // 把名单重复展开成轨道。
         var trackLength = repeats * names.Count;
         var track = new string[trackLength];
+        // 每个方块对应的品质：中选那块用真正摇出来的，其余只是装饰。
+        var rarities = new ItemRarity[trackLength];
         for (var i = 0; i < trackLength; i++)
         {
             // 按轮次循环取名字。
             track[i] = names[i % names.Count];
+            // 喵~防御：每个方块都要有一个品质，装饰块也得摇一次。
+            // 摇出来的只是颜色，和「抽到谁」完全无关。
+            rarities[i] = ItemRarityTable.Roll(rarityWeights, pickIndexSelector);
         }
+
+        // 中选那块覆盖成真正摇出来的品质——它是唯一有意义的那个，
+        // 其余方块的品质纯粹是滚动过程中闪过去的颜色。
+        rarities[winnerTrackIndex] = winnerRarity;
 
         // 让那一块正好停在视口正中所需的平移量。
         var targetOffset = OffsetFor(winnerTrackIndex, safeSlotWidth, safeGap, safeViewportWidth);
@@ -122,7 +140,7 @@ internal static class CsgoTrack
         return new CsgoPlan(track, winnerTrackIndex,
             safeSlotWidth, safeSlotHeight, safeGap,
             safeViewportWidth, safeViewportHeight,
-            targetOffset, total, winner);
+            targetOffset, rarities, winnerRarity, total, winner);
     }
 
     /// <summary>

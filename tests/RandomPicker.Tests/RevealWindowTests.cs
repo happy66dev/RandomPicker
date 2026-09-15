@@ -1,5 +1,7 @@
 using System;
+using System.Threading.Tasks;
 using Avalonia.Headless.XUnit;
+using Avalonia.Threading;
 using Avalonia.Media;
 using ClassIsland.RandomPicker.Models;
 using ClassIsland.RandomPicker.Services;
@@ -105,5 +107,92 @@ public class RevealWindowTests
         RevealWindow.Play(plan, BaseSettings.RevealFontSize, Colors.Cyan, Hold, () => { });
 
         RevealWindow.CloseCurrent();
+    }
+
+    /// <summary>
+    /// 还没装载动画就点跳过，不该抛异常，也不该把结果发两遍。
+    /// </summary>
+    /// <remarks>
+    /// 悬浮钮上的「跳」有防抖：收尾之后残留的令牌如果还被当成「有动画在播」，
+    /// 结束逻辑就会跑第二遍——表现是同一个名字的大字弹两次、提醒发两条。
+    /// </remarks>
+    [AvaloniaFact]
+    public void SkipAnimation_WhenNothingIsPlaying_DoesNotThrow()
+    {
+        // 一次都没播过就跳。
+        RevealWindow.SkipAnimation();
+
+        // 正常出一次结果，再跳一次。
+        RevealWindow.Show("张三", BaseSettings.RevealFontSize, Hold, Colors.Cyan);
+        RevealWindow.SkipAnimation();
+
+        RevealWindow.CloseCurrent();
+    }
+
+    /// <summary>
+    /// 播到一半点跳过，结果要<b>立刻</b>交出来，不能等动画播完。
+    /// </summary>
+    /// <remarks>
+    /// 这是「跳」这个功能的全部意义所在：中选者早就定好了，跳过只是不看表演。
+    /// <para/>
+    /// 动画本身在无头环境里不会自己走完（时钟不推进），所以这里不验证画面，
+    /// 只验证<b>取消之后收尾照样发生</b>——也就是回调真的被调用了。
+    /// 这一条同时把「跳过被误当成普通取消、结果被吞掉」这个坑挡住：
+    /// 普通取消是<b>不</b>该回调的，跳过必须回调。
+    /// </remarks>
+    [AvaloniaFact]
+    public async Task SkipAnimation_DeliversTheResultWithoutWaiting()
+    {
+        var plan = RevealAnimationPlanner.Build(RevealAnimationStyle.Scroll, Names, "张三", BaseSettings);
+        Assert.NotNull(plan);
+
+        var completed = false;
+        RevealWindow.Play(plan, BaseSettings.RevealFontSize, Colors.Cyan, Hold, () => completed = true);
+
+        // 刚起播，还没到收尾。
+        Assert.False(completed);
+
+        // 点「跳」。
+        RevealWindow.SkipAnimation();
+
+        // 把调度器上排着的活干完：取消的续体、结果层的过渡都在这条队列上。
+        for (var i = 0; i < 10; i++)
+        {
+            Dispatcher.UIThread.RunJobs();
+            await Task.Yield();
+        }
+
+        // 结果必须已经交出来了。
+        Assert.True(completed, "点跳过之后回调没被调用，结果被吞掉了");
+
+        RevealWindow.CloseCurrent();
+    }
+
+    /// <summary>
+    /// 收起窗口时正在播的动画被掐掉，<b>不该</b>再回调——那会往一个已经关掉的窗口里塞结果。
+    /// </summary>
+    /// <remarks>
+    /// 和上一条刚好相反：同样是取消，含义完全不同。
+    /// 这一对测试把「跳过」和「普通取消」这两条路的区别钉死。
+    /// </remarks>
+    [AvaloniaFact]
+    public async Task CloseCurrent_WhileAnimating_DoesNotDeliverTheResult()
+    {
+        var plan = RevealAnimationPlanner.Build(RevealAnimationStyle.Scroll, Names, "张三", BaseSettings);
+        Assert.NotNull(plan);
+
+        var completed = false;
+        RevealWindow.Play(plan, BaseSettings.RevealFontSize, Colors.Cyan, Hold, () => completed = true);
+
+        // 窗口要关了。
+        RevealWindow.CloseCurrent();
+
+        for (var i = 0; i < 10; i++)
+        {
+            Dispatcher.UIThread.RunJobs();
+            await Task.Yield();
+        }
+
+        Assert.False(completed, "窗口都关了还回调，结果会塞进一个不存在的窗口里");
     }
 }

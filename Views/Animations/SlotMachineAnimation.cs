@@ -232,8 +232,8 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
             char? shown = null;
             if (sequence.Length > 0 && progress > 0)
             {
-                // 把线性进度压成「起手飞快、收尾一点一点挪」——三次方足够像在抽。
-                var eased = 1 - Math.Pow(1 - progress, 3);
+                // 把线性进度压成「起手飞快、收尾一点一点挪」，曲线和另外三种样式共用。
+                var eased = RevealEasing.EaseOutCubic(progress);
                 // 落到序列的第几个字上。
                 var step = (int)Math.Floor(eased * (sequence.Length - 1));
                 // 取出来夹一下，浮点误差不会让它越界。

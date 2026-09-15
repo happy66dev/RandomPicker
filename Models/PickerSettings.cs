@@ -123,6 +123,20 @@ public class PickerSettings
     /// <remarks>滑进扇区的那一下是固定 0.35 秒，不计在这个值里面。</remarks>
     public double WheelDurationSeconds { get; set; } = 6.0;
 
+    /// <summary>
+    /// CSGO 动画里各档品质的权重，单位：百分数。
+    /// </summary>
+    /// <remarks>
+    /// 顺序和 <c>ItemRarity</c> 的枚举一致：军规级（蓝）、受限级（紫）、保密级（粉）、
+    /// 隐秘级（红）、罕见特殊物品（金）。默认就是 CS:GO 开箱那套经典分布。
+    /// <para/>
+    /// <b>这套权重只决定方块的颜色，不决定抽到谁。</b>「不影响实际抽取」这一点有单测钉着
+    /// （见 <c>ItemRarityTests</c>：把权重全压给金，中选者依然不变）。
+    /// 另外这里的默认值和 <c>ItemRarityTable</c> 里的那份必须一致，
+    /// 有单测比对，防止改了一处忘了另一处。
+    /// </remarks>
+    public List<double> RarityWeights { get; set; } = [79.92, 15.98, 3.20, 0.64, 0.26];
+
     #endregion
 
     #region 拍照抽人

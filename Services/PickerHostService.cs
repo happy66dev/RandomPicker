@@ -60,6 +60,16 @@ public class PickerHostService : IHostedService
     /// <summary>把设置存盘。设置页改完调一下。</summary>
     public void SaveSettings() => SaveSettingsInternal();
 
+    /// <summary>
+    /// 设置被改动并落盘之后触发。
+    /// </summary>
+    /// <remarks>
+    /// 右键菜单和设置页改的是<b>同一份</b>设置，但两边都是「谁改谁负责刷新自己」——
+    /// 于是从菜单改完动画样式，已经打开着的设置页不会知道，下拉框还停在旧的一档上，
+    /// 看起来就是「两处选择不一致」。这条事件用来把改动广播出去。
+    /// </remarks>
+    public event EventHandler? SettingsSaved;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _settings = PickerSettings.Load(_settingsPath);
@@ -96,6 +106,8 @@ public class PickerHostService : IHostedService
 
         _window = new PickerWindow(_settings, _roster);
         _window.PickRequested += (_, _) => Pick();
+        // 动画播到一半时点钮，含义是「跳过动画」，而不是「再抽一次」。
+        _window.SkipRequested += (_, _) => RevealWindow.SkipAnimation();
         _window.SettingsChanged += (_, _) => SaveSettingsInternal();
         _window.HideRequested += (_, _) =>
         {
@@ -114,6 +126,9 @@ public class PickerHostService : IHostedService
     {
         _window?.CapturePosition();
         _settings.Save(_settingsPath);
+        // 广播出去，让设置页把自己刷成最新值。
+        // 悬浮钮右键菜单和设置页是同一份设置的两个入口，两边显示必须一致。
+        SettingsSaved?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
@@ -229,11 +244,12 @@ public class PickerHostService : IHostedService
         // 结果在这一刻就抽好了。往后播不播动画、播哪一种，都不会再改变他。
         var name = TextRoster.Pick(_settings);
         SaveSettingsInternal();
-        _window?.RefreshCounter();
 
         if (name is null)
         {
             // 名单是空的——与其静悄悄什么都不发生，不如直接把话说清楚。
+            // 这一下没抽成，所以钮上的剩余人数现在就刷新。
+            _window?.RefreshCounter();
             Reveal(note is null ? "名单是空的" : note, isHint: true);
             return;
         }
@@ -278,11 +294,13 @@ public class PickerHostService : IHostedService
         // 不播动画这条路：直接出结果。
         if (plan is null)
         {
+            // 没有动画就没什么可等的，出结果的同时把钮上的剩余人数刷成新的。
+            _window?.RefreshCounter();
             FinishReveal(name, note);
             return;
         }
 
-        // 播动画这条路：这期间挡住新的抽选，钮上显示「抽选中」。
+        // 播动画这条路：这期间挡住新的抽选，钮上显示「跳」，点一下可以跳过。
         _animating = true;
         _window?.SetBusy(PickerBusyKind.Animating);
 
@@ -291,9 +309,12 @@ public class PickerHostService : IHostedService
 
         RevealWindow.Play(plan, _settings.RevealFontSize, _window?.Accent ?? DefaultAccent, hold, () =>
         {
-            // 动画播完（或被跳过）的这一刻：解禁、恢复钮上的剩余人数，然后出结果。
+            // 动画播完（或被跳过）的这一刻才是「结果揭晓」：
+            // 先把钮上的状态收掉——SetBusy(None) 会顺手把剩余人数刷成新的，
+            // 而那正是这一抽的结果之一，所以必须在动画结束之后才刷，否则等于提前剧透。
             _animating = false;
             _window?.SetBusy(PickerBusyKind.None);
+            // 中央大字和 ClassIsland 提醒都在这里才发出去，免得提醒先于动画到达。
             FinishReveal(name, note);
         });
     }
