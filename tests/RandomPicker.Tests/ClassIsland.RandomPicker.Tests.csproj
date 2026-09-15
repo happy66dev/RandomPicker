@@ -21,6 +21,11 @@
          版本必须 >= 9.0.2：宿主的 ReactiveUI 20.2.45 要求至少这个版本，
          给低了 NuGet 会以「包降级」(NU1605) 直接拒绝还原。 -->
     <PackageReference Include="System.Text.Json" Version="9.0.2" />
+    <!-- 界面层的测试要在一个真正的 Avalonia 环境里跑。无头平台不需要显示器，
+         配合 Skia 还能把控件真的渲染成位图——「画面上是不是真有东西」这一条
+         只有渲染出来才验得了。版本必须和插件用的 Avalonia 一致。 -->
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="11.3.17" />
+    <PackageReference Include="Avalonia.Skia" Version="11.3.17" />
   </ItemGroup>
 
   <ItemGroup>

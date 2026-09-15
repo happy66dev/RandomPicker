@@ -155,7 +155,17 @@ public class RevealWindow : Window
             // 结果层一开始是藏着的：动画先上，动画结束才交叉淡入换到它。
             IsVisible = false,
             Opacity = 0,
-            Transitions = [new DoubleTransition { Duration = TimeSpan.FromMilliseconds(160) }]
+            Transitions =
+            [
+                // 淡入用的过渡。DoubleTransition 不会从泛型参数推出属性名，
+                // 必须显式写上 Property——漏了会在构造窗口时直接抛
+                //「Transition has no property specified.」，整个插件都用不了。
+                new DoubleTransition
+                {
+                    Property = OpacityProperty,
+                    Duration = TimeSpan.FromMilliseconds(160)
+                }
+            ]
         };
 
         // 动画层和结果层叠在一起，靠 IsVisible 切换。

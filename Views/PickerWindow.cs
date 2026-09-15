@@ -257,30 +257,115 @@ public class PickerWindow : Window
     {
         base.OnOpened(e);
 
-        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
-        if (_settings.WindowX == int.MinValue || _settings.WindowY == int.MinValue)
-        {
-            // 首次运行：摆在主屏右下角靠里一点的位置。
-            if (screen is not null)
-            {
-                var scaling = screen.Scaling <= 0 ? 1.0 : screen.Scaling;
-                var size = (int)Math.Ceiling(_settings.Diameter * scaling);
-                Position = new PixelPoint(
-                    screen.WorkingArea.X + screen.WorkingArea.Width - size - (int)(48 * scaling),
-                    screen.WorkingArea.Y + screen.WorkingArea.Height - size - (int)(48 * scaling));
-            }
-        }
-        else
-        {
-            Position = new PixelPoint(_settings.WindowX, _settings.WindowY);
-        }
-
+        // 先按设置摆一次。屏幕信息还没就绪时会返回 false，由下面的重试兜住。
+        RestorePosition();
         ClampToScreen();
         ApplyAccent();
+
+        // 喵~防御：刚开机时显示器信息可能迟到——那一刻拿不到屏幕、或者拿到的是空矩形。
+        // 这时候摆位和夹取都会失败，窗口就停在系统给的默认位置，也就是左上角 (0,0)。
+        // 这就是「重启后悬浮钮跑到左上角」那个 bug。这里每 250 毫秒重试一次，
+        // 最多试 5 秒；一旦摆成功就立刻停掉，不打扰后面的正常使用。
+        StartPositionRetry();
 
         _topmost = new TopmostEnforcer(this);
         _topmost.Attach();
     }
+
+    /// <summary>摆位没成功时的重试计时器。</summary>
+    private DispatcherTimer? _positionRetryTimer;
+
+    /// <summary>已经重试了几次。用来兜住「屏幕信息一直没就绪」这种极端情况。</summary>
+    private int _positionRetryCount;
+
+    /// <summary>最多重试几次。250 毫秒 × 20 次 = 5 秒。</summary>
+    private const int MaxPositionRetries = 20;
+
+    /// <summary>位置是不是已经按设置摆好了。</summary>
+    private bool _positionRestored;
+
+    /// <summary>
+    /// 按设置把窗口摆到该在的地方。
+    /// </summary>
+    /// <returns>摆好了返回 true；屏幕信息还没就绪、这次摆不了，返回 false。</returns>
+    /// <remarks>
+    /// 分两种情形：配置里没有记录位置（首次运行）就摆在主屏右下角靠里的地方；
+    /// 有记录就摆回上次的位置。
+    /// <para/>
+    /// <b>这个方法是幂等的</b>，重试时重复调用不会出问题——所以能直接拿来当重试体。
+    /// </remarks>
+    private bool RestorePosition()
+    {
+        var screen = PickScreen();
+
+        // 喵~防御：屏幕还没探到，或者拿到的是个空矩形——这时候算什么都是错的，
+        // 报个 false 让调用方稍后再来。绝不能拿它去算位置，那样只会算出 (0,0)。
+        if (screen is null)
+        {
+            return false;
+        }
+
+        // 屏幕信息换算成纯计算层认识的形状。摆位判断全交给 WindowPlacement，
+        // 那边有单测钉着「信息不可信时不要动窗口」，这里只负责把值搬过去。
+        var bounds = ToArea(screen.Bounds);
+        var workingArea = ToArea(screen.WorkingArea);
+
+        if (_settings.WindowX == int.MinValue || _settings.WindowY == int.MinValue)
+        {
+            // 首次运行：摆在主屏右下角靠里一点的位置。
+            var corner = WindowPlacement.DefaultCorner(workingArea, screen.Scaling, _settings.Diameter);
+            // 喵~防御：还算不准就先不摆，交给重试。
+            if (corner is null)
+            {
+                return false;
+            }
+
+            Position = new PixelPoint(corner.Value.X, corner.Value.Y);
+        }
+        else
+        {
+            // 摆回上次记下来的位置。
+            Position = new PixelPoint(_settings.WindowX, _settings.WindowY);
+        }
+
+        _positionRestored = true;
+        return true;
+    }
+
+    /// <summary>开一个短命的重试计时器，把没摆成功的位补上。</summary>
+    /// <remarks>
+    /// 只在「开机那一瞬间显示器信息还没就绪」时才真的用得上，
+    /// 正常情况下 <see cref="RestorePosition"/> 第一次就成功，这里直接返回。
+    /// </remarks>
+    private void StartPositionRetry()
+    {
+        // 已经摆好了就不用重试。
+        if (_positionRestored)
+        {
+            return;
+        }
+
+        _positionRetryCount = 0;
+        _positionRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _positionRetryTimer.Tick += (_, _) =>
+        {
+            // 每次重试都先试着摆一次；摆成功、或者试够次数了，就收工。
+            if (RestorePosition() || ++_positionRetryCount >= MaxPositionRetries)
+            {
+                _positionRetryTimer?.Stop();
+                _positionRetryTimer = null;
+            }
+        };
+        _positionRetryTimer.Start();
+    }
+
+    /// <summary>把 Avalonia 的屏幕矩形换成纯计算层的形式。</summary>
+    private static ScreenArea ToArea(PixelRect rect) => new(rect.X, rect.Y, rect.Width, rect.Height);
+    /// <summary>挑出窗口所在的屏幕。</summary>
+    private Avalonia.Platform.Screen? PickScreen() =>
+        Screens.ScreenFromWindow(this)
+        ?? Screens.ScreenFromPoint(Position)
+        ?? Screens.Primary;
 
     /// <summary>
     /// 把窗口夹回当前屏幕内。
@@ -288,30 +373,30 @@ public class PickerWindow : Window
     /// <remarks>
     /// 用的是 <c>Screen.Bounds</c> 而不是 <c>WorkingArea</c>——前者含任务栏区域。
     /// 也就是允许盖住任务栏，但不允许拖出屏幕。
+    /// <para/>
+    /// <b>拿不准的时候宁可不夹。</b>这个方法的调用点很密（位置一变、改大小、开窗都走它），
+    /// 其中开窗那一次很可能撞上「显示器信息还没就绪」。那时候照常算会把位置钉死在屏幕左上角，
+    /// 所以判断本身抽到了 <see cref="WindowPlacement.Clamp"/>，那里对坏值一律返回「不要动」。
     /// </remarks>
     private void ClampToScreen()
     {
-        var screen = Screens.ScreenFromWindow(this)
-                     ?? Screens.ScreenFromPoint(Position)
-                     ?? Screens.Primary;
+        var screen = PickScreen();
         if (screen is null)
         {
             return;
         }
 
-        var bounds = screen.Bounds;
-        var scaling = screen.Scaling <= 0 ? 1.0 : screen.Scaling;
-        var width = (int)Math.Ceiling(Width * scaling);
-        var height = (int)Math.Ceiling(Height * scaling);
-
-        var maxX = Math.Max(bounds.X, bounds.X + bounds.Width - width);
-        var maxY = Math.Max(bounds.Y, bounds.Y + bounds.Height - height);
-        var x = Math.Clamp(Position.X, bounds.X, maxX);
-        var y = Math.Clamp(Position.Y, bounds.Y, maxY);
-
-        if (x != Position.X || y != Position.Y)
+        var clamped = WindowPlacement.Clamp(
+            (Position.X, Position.Y), ToArea(screen.Bounds), screen.Scaling, Width, Height);
+        // 喵~防御：算不准（返回 null）就保持原样，而不是夹到一个更保守的位置。
+        if (clamped is null)
         {
-            Position = new PixelPoint(x, y);
+            return;
+        }
+
+        if (clamped.Value.X != Position.X || clamped.Value.Y != Position.Y)
+        {
+            Position = new PixelPoint(clamped.Value.X, clamped.Value.Y);
         }
     }
 
@@ -685,6 +770,9 @@ public class PickerWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _holdTimer.Stop();
+        // 摆位重试也要停掉，否则窗口都关了它还在空转。
+        _positionRetryTimer?.Stop();
+        _positionRetryTimer = null;
         _menu?.Hide();
         _topmost?.Dispose();
         base.OnClosed(e);
