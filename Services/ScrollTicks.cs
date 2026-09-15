@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
 
 namespace ClassIsland.RandomPicker.Services;
 
@@ -92,56 +91,87 @@ internal static class ScrollTicks
     /// <summary>
     /// 生成「滚动名字」的排片表。
     /// </summary>
-    /// <param name="names">当前名单，用来随机抽帧里要显示的名字。</param>
+    /// <param name="names">当前名单，帧序就是它循环展开的一段。</param>
     /// <param name="winner">中选者，最后一帧一定是他。</param>
     /// <param name="totalSeconds">动画总时长，单位：秒。</param>
-    /// <param name="pickIndexSelector">
-    /// 从 0 到「候选人数减一」里挑一个下标的函数。
-    /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
-    /// </param>
-    public static ScrollPlan BuildPlan(IReadOnlyList<string>? names, string winner, double totalSeconds,
-        Func<int, int>? pickIndexSelector = null)
+    public static ScrollPlan BuildPlan(IReadOnlyList<string>? names, string winner, double totalSeconds)
     {
         // 先算好每一帧停留多久。
         var intervals = BuildIntervals(totalSeconds);
-        // 再按帧数挑出每一帧要显示的名字。
-        var frames = BuildFrames(names, winner, intervals.Length, pickIndexSelector);
-        // 总时长取各帧时长之和：幂律时刻表的末项就是总时长，这里再求一次和是为了让
-        // 「计划里写的时长」和「实际播的时长」永远一致。
+        // 再按帧数排出每一帧要显示的名字。
+        var frames = BuildFrames(names, winner, intervals.Length);
+        // 总时长取各帧时长之和：这样「计划里写的时长」和「实际播的时长」永远一致。
         return new ScrollPlan(frames, intervals, TimeSpan.FromSeconds(intervals.Sum()), winner);
     }
 
-    /// <summary>挑出每一帧要显示的名字，最后一帧固定是中选者。</summary>
-    private static string[] BuildFrames(IReadOnlyList<string>? names, string winner, int frameCount,
-        Func<int, int>? pickIndexSelector)
+    /// <summary>排出每一帧要显示的名字：名单循环展开的一段，最后一帧固定是中选者。</summary>
+    /// <param name="names">当前名单。</param>
+    /// <param name="winner">中选者。</param>
+    /// <param name="frameCount">要排多少帧。</param>
+    /// <remarks>
+    /// <b>帧序就是名单本身循环展开的一段</b>，和 CSGO 开箱拼轨道用的是同一个思路：
+    /// 名字一个挨一个滚过去，看着才像「滚动」。
+    /// <para/>
+    /// 早先的写法是每一帧从「其他人」里随机挑一个，名字在乱跳——
+    /// 跳是跳得热闹，可减速感全被跳没了：换帧的间隔明明在等比变长，
+    /// 画面却看不出节奏，只像「越来越慢地乱闪」。
+    /// 2026-09-15 主人说的「他最后变慢的过程似乎消失了」以及
+    /// 「参考 csgo 的滚动机制」，指的就是这里。
+    /// <para/>
+    /// 中选者排在最后一帧，他前面依次是名单里排在他前面的那些人——滚到他身上正好停住。
+    /// </remarks>
+    private static string[] BuildFrames(IReadOnlyList<string>? names, string winner, int frameCount)
     {
-        var frames = new string[frameCount];
-
-        // 除中选者之外的其他人，用来在前面几帧里乱跳。
-        // 喵~防御：名单为 null 时按空处理，下面会走「全部帧都显示中选者」的分支。
-        var others = names is null
-            ? []
-            : names.Where(name => !string.Equals(name, winner, StringComparison.Ordinal)).ToArray();
-
-        // 前面每一帧都从「其他人」里随机挑一个。
-        // 最后留一帧给中选者，所以循环到 frameCount - 1 为止。
-        for (var i = 0; i < frameCount - 1; i++)
+        // 喵~防御：一帧都不要时直接给空数组，下面的取模会除以 0。
+        if (frameCount <= 0)
         {
-            // 名单里只有中选者一个人（或者名单是空的）：没有别人可跳，每帧都显示他。
-            if (others.Length == 0)
-            {
-                frames[i] = winner;
-                continue;
-            }
-
-            // 挑一个下标：生产环境用操作系统熵源，测试注入固定函数。
-            var index = pickIndexSelector?.Invoke(others.Length) ?? RandomNumberGenerator.GetInt32(others.Length);
-            // 喵~防御：注入的选择器可能给出越界下标，夹回合法范围再用。
-            index = Math.Clamp(index, 0, others.Length - 1);
-            frames[i] = others[index];
+            return [];
         }
 
-        // 最后一帧必定是中选者——动画定格在他身上。
+        // 中选者在名单里的位置。
+        var winnerIndex = -1;
+        if (names is not null)
+        {
+            for (var i = 0; i < names.Count; i++)
+            {
+                // 用序数比较：名字是数据，不该受区域设置影响。
+                if (string.Equals(names[i], winner, StringComparison.Ordinal))
+                {
+                    winnerIndex = i;
+                    break;
+                }
+            }
+        }
+
+        var frames = new string[frameCount];
+
+        // 喵~防御：名单为空、或者中选者不在名单里（名单在开播前被改过）时没有顺序可排，
+        // 每一帧都显示中选者——效果等同于「定格在他身上」，而不是崩掉或者显示别人。
+        if (names is null || names.Count == 0 || winnerIndex < 0)
+        {
+            for (var i = 0; i < frameCount; i++)
+            {
+                frames[i] = winner;
+            }
+
+            return frames;
+        }
+
+        for (var i = 0; i < frameCount; i++)
+        {
+            // 从末帧往前倒着数：末帧是中选者，往前一帧就是他名单里的前一个人，再往前再前一个……
+            var offset = i - (frameCount - 1);
+            var index = (winnerIndex + offset) % names.Count;
+            // 喵~防御：C# 的取余对负数保留符号，负数下标会越界，再补一圈兜回 0~count-1。
+            if (index < 0)
+            {
+                index += names.Count;
+            }
+
+            frames[i] = names[index];
+        }
+
+        // 末帧钉成中选者：上面那套算式本来就该给出他，这里再明写一次，免得取模写错时静默停错人。
         frames[frameCount - 1] = winner;
         return frames;
     }

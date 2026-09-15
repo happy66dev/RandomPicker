@@ -100,13 +100,15 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
     private static readonly TimeSpan RevealRamp = TimeSpan.FromMilliseconds(140);
 
     /// <summary>
-    /// 整段动画的总时长，含最后一格停住之后那段定格。装载时从排片表抄下来。
+    /// 动作结束时刻：最后一格停住的那一瞬间，同时也是这段动画的 <c>Duration</c>。
     /// </summary>
-    /// <remarks>它<b>大于</b>「每格时长 × 要转的格数」，多出来的那一截就是让主人看清名字的留白。</remarks>
-    private TimeSpan _planTotal = TimeSpan.FromSeconds(1.5 * 2);
-
-    /// <summary>动作结束时刻：最后一格停住的那一瞬间。唯一候选的那几格在这一刻才亮出来。</summary>
-    /// <remarks>从自己的排片数据算（每格 × 要转的格数），不依赖「总时长里含不含定格」。</remarks>
+    /// <remarks>
+    /// 从自己的排片数据算（每格 × 要转的格数），不依赖「总时长里含不含定格」——
+    /// 直接构造的排片表（测试，或将来别处复用）不一定带定格那一段。
+    /// <para/>
+    /// 定格不算在时长里：基类在播完之后原地等一会儿，那时所有格子都停在终值上。
+    /// 唯一候选的那几格也在这一刻亮出来。
+    /// </remarks>
     private TimeSpan _motionEnd;
 
     /// <summary>一个格子的宽度。</summary>
@@ -161,13 +163,13 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
     public override Size StageSize => _stageSize;
 
     /// <inheritdoc/>
-    public override void Load(RevealAnimationPlan plan)
+    protected override void LoadPlan(RevealAnimationPlan plan)
     {
         // 喵~防御：装错了计划类型时什么都不画，也好过抛异常把结果卡住。
         if (plan is not SlotPlan slot)
         {
             _slotCount = 0;
-            _planTotal = TimeSpan.Zero;
+            _motionEnd = TimeSpan.Zero;
             _stageSize = default;
             return;
         }
@@ -182,11 +184,9 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
         // 要转几格：后面那些候选字只剩唯一的格子不占时间，等前几格停稳了才亮出来。
         _spinSlotCount = Math.Clamp(slot.SpinSlotCount, 0, _slotCount);
 
-        // 动作结束时刻 = 每格时长 × 要转的格数。
+        // 动作结束时刻 = 每格时长 × 要转的格数。它同时也是这段动画的 Duration。
+        // 定格不在这里：基类会在播完之后原地等一会儿，那时所有格子都停在终值上。
         _motionEnd = _slotStep * _spinSlotCount;
-
-        // 总时长照抄排片表：它已经含了定格那一段，最后一格的落点因此提前于它。
-        _planTotal = slot.Total;
 
         _spinSequences = new char[_slotCount][];
 
@@ -222,21 +222,20 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
 
 
     /// <summary>
-    /// 按排片表造出这段动画。抽出来是为了让「定格那段留白真的存在」能被单测验到。
+    /// 按排片表造出这段动画。抽出来是为了让「最后一格停在哪一刻」能被单测验到。
     /// </summary>
     /// <remarks>
-    /// <b>最后一格的落点是 <c>总时长 - 定格时长</c>，后面那一截留白就是定格。</b>
-    /// 排片表的 <see cref="SlotPlan.Total"/> 已经含了 <see cref="RevealAnimationPlan.SettleSeconds"/>，
-    /// 而这里所有关键帧都落在「总时长 - 定格」之前，于是 Avalonia 在最后一个关键帧之后
-    /// 保持终值不动（<c>FillMode.Forward</c> 会把最后一帧的值延续到结尾）——
-    /// 板面就这样静止着让主人看清拼出来的名字。
+    /// <b>最后一格的落点就是动画的结尾，也就是排片表说的动作结束时刻。</b>
+    /// 所有关键帧都落在这一刻或之前，于是 Avalonia 在最后一个关键帧之后保持终值不动
+    /// （<c>FillMode.Forward</c>）——定格那一段由基类在播完之后原地等，画面就这么静止着，
+    /// 让主人看清拼出来的名字。
     /// <para/>
     /// <b>候选字只剩唯一的那几格不转</b>：它们只有一个值可以取，转起来也是同一个字一直闪，
     /// 等于白等。这些格子在时刻 0 就被置成终值——板面一上来就是对的。
     /// 从第一格起全是唯一时，整段动作时长为 0，看见的是「板面直接出现、停一下、出结果」。
     /// <para/>
-    /// 要是哪次改动把这些关键帧推到了结尾，留白就没了，
-    /// 「最后一个字展示一会会再继续」这条需求会静默失效，所以有测试盯着它。
+    /// 要是哪次改动把这些关键帧推到了动作时长之外，Avalonia 算 cue 时会当场抛异常，
+    /// 整段动画静默消失，所以有测试盯着它。
     /// </remarks>
     internal override IReadOnlyList<Animation> BuildAnimations()
     {
@@ -244,8 +243,9 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
         // 这样时间轴本身保持简单——每格占的时间窗一眼就能看出来。
         var animation = new Animation
         {
-            // 总时长含定格那段，所以最后一格的落点会提前于它。
-            Duration = _planTotal,
+            // 动画时长就是动作时长：最后一格在它末尾停住，缓动曲线铺满全程。
+            // 定格由基类在播完之后等，不占这里的时长。
+            Duration = _motionEnd,
             FillMode = FillMode.Forward,
             Easing = new LinearEasing()
         };

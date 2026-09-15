@@ -15,9 +15,6 @@ namespace ClassIsland.RandomPicker.Tests;
 /// </remarks>
 public sealed class ScrollTicksTests
 {
-    /// <summary>固定选择器：永远挑第一个候选人，让结果可以断言。</summary>
-    private static Func<int, int> AlwaysFirst => _ => 0;
-
     #region 换帧间隔
 
     [Fact]
@@ -178,7 +175,7 @@ public sealed class ScrollTicksTests
     public void BuildPlan_LastFrameIsAlwaysTheWinner()
     {
         // 动画必须定格在中选者身上，这是「结果早就抽好了、动画只是演」这条设计的落点。
-        var plan = ScrollTicks.BuildPlan(["张三", "李四", "王五"], "李四", 4.0, AlwaysFirst);
+        var plan = ScrollTicks.BuildPlan(["张三", "李四", "王五"], "李四", 4.0);
 
         Assert.Equal("李四", plan.Frames[^1]);
         Assert.Equal("李四", plan.Winner);
@@ -188,7 +185,7 @@ public sealed class ScrollTicksTests
     public void BuildPlan_FrameCountMatchesIntervalCount()
     {
         // 每一帧都得有对应的停留时长，不然播放时会错位。
-        var plan = ScrollTicks.BuildPlan(["张三", "李四"], "张三", 4.0, AlwaysFirst);
+        var plan = ScrollTicks.BuildPlan(["张三", "李四"], "张三", 4.0);
 
         Assert.Equal(plan.Intervals.Count, plan.Frames.Count);
     }
@@ -197,28 +194,61 @@ public sealed class ScrollTicksTests
     public void BuildPlan_TotalMatchesTheSumOfIntervals()
     {
         // 计划里写的总时长必须和实际要播的一致。
-        var plan = ScrollTicks.BuildPlan(["张三", "李四"], "张三", 4.0, AlwaysFirst);
+        var plan = ScrollTicks.BuildPlan(["张三", "李四"], "张三", 4.0);
 
         Assert.Equal(plan.Intervals.Sum(), plan.Total.TotalSeconds, 6);
     }
 
+    /// <summary>
+    /// 帧序就是名单循环展开的一段：相邻两帧在名单里也相邻，滚起来才像「滚动」。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是为 2026-09-15「参考 csgo 的滚动机制」建的。</b>
+    /// 早先的写法是每一帧从「其他人」里随机挑，名字在乱跳；换帧的间隔明明在等比变长，
+    /// 画面却看不出节奏，减速感全被跳没了——主人说的「他最后变慢的过程似乎消失了」。
+    /// 换成名单循环之后，名字一个挨一个滚过去，跟 CSGO 拼轨道是同一个思路。
+    /// </remarks>
     [Fact]
-    public void BuildPlan_EarlyFramesNeverShowTheWinner()
+    public void BuildPlan_FramesFollowTheRosterOrderUpToTheWinner()
     {
-        // 前面几帧滚的都是「别人」，不然中选者会提前露面，悬念就没了。
-        var plan = ScrollTicks.BuildPlan(["张三", "李四", "王五"], "李四", 4.0, AlwaysFirst);
+        // 三人的名单，末帧是中选者「李四」。
+        string[] roster = ["张三", "李四", "王五"];
+        var plan = ScrollTicks.BuildPlan(roster, "李四", 4.0);
 
+        Assert.Equal("李四", plan.Frames[^1]);
+
+        // 顺着往前推：每一帧都该紧挨着下一帧在名单里的前一个，走完一轮就绕到名单末尾。
         for (var i = 0; i < plan.Frames.Count - 1; i++)
         {
-            Assert.NotEqual("李四", plan.Frames[i]);
+            // 下一帧在名单里的位置。
+            var nextIndex = Array.IndexOf(roster, plan.Frames[i + 1]);
+            // 这一帧在名单里的位置。
+            var currentIndex = Array.IndexOf(roster, plan.Frames[i]);
+            // 「下一帧的前一个」，绕圈时从开头回到末位。
+            var expected = (nextIndex - 1 + roster.Length) % roster.Length;
+
+            Assert.Equal(expected, currentIndex);
         }
+    }
+
+    /// <summary>名单比帧数短时按名单循环重复，滚的始终是名单里的人。</summary>
+    [Fact]
+    public void BuildPlan_WithShortRoster_RepeatsTheRosterInOrder()
+    {
+        var plan = ScrollTicks.BuildPlan(["张三", "李四"], "张三", 4.0);
+
+        // 帧数远多于人数，但每一帧都得是名单里的人。
+        Assert.True(plan.Frames.Count > 2);
+        Assert.All(plan.Frames, frame => Assert.True(frame is "张三" or "李四"));
+        // 末帧仍然是中选者。
+        Assert.Equal("张三", plan.Frames[^1]);
     }
 
     [Fact]
     public void BuildPlan_WithSingleName_EveryFrameShowsThatName()
     {
         // 名单里只有中选者一个人：没别人可滚，每帧都显示他。
-        var plan = ScrollTicks.BuildPlan(["张三"], "张三", 4.0, AlwaysFirst);
+        var plan = ScrollTicks.BuildPlan(["张三"], "张三", 4.0);
 
         Assert.All(plan.Frames, frame => Assert.Equal("张三", frame));
     }
@@ -227,25 +257,26 @@ public sealed class ScrollTicksTests
     public void BuildPlan_WithNullRoster_EveryFrameShowsWinner()
     {
         // 喵~防御：名单为 null 时按空名单处理，而不是崩掉。
-        var plan = ScrollTicks.BuildPlan(null, "张三", 4.0, AlwaysFirst);
+        var plan = ScrollTicks.BuildPlan(null, "张三", 4.0);
 
         Assert.All(plan.Frames, frame => Assert.Equal("张三", frame));
     }
 
     [Fact]
-    public void BuildPlan_WithOutOfRangeSelector_DoesNotThrow()
+    public void BuildPlan_WithWinnerNotInRoster_ShowsOnlyTheWinner()
     {
-        // 喵~防御：注入的选择器给出越界下标时，内部会夹回合法范围。
-        var plan = ScrollTicks.BuildPlan(["张三", "李四", "王五"], "张三", 4.0, _ => 999);
+        // 喵~防御：中选者不在名单里（动画开播前名单被改过）时没有顺序可排，
+        // 每一帧都给他——效果等同于「定格在他身上」，而不是崩掉或者显示别人。
+        var plan = ScrollTicks.BuildPlan(["张三", "李四"], "王五", 4.0);
 
-        Assert.Equal("张三", plan.Frames[^1]);
+        Assert.All(plan.Frames, frame => Assert.Equal("王五", frame));
     }
 
     [Fact]
     public void BuildPlan_WithZeroDuration_ProducesSingleFrame()
     {
         // 时长为 0 时只有一帧，而且就是中选者——等同于直接出结果。
-        var plan = ScrollTicks.BuildPlan(["张三", "李四"], "李四", 0, AlwaysFirst);
+        var plan = ScrollTicks.BuildPlan(["张三", "李四"], "李四", 0);
 
         Assert.Single(plan.Frames);
         Assert.Equal("李四", plan.Frames[0]);

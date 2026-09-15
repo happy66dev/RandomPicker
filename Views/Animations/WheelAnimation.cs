@@ -35,23 +35,22 @@ internal sealed class WheelAnimation : RevealAnimationBase
     /// <summary>盘面上的名字，顺时针排列。</summary>
     private IReadOnlyList<string> _sectors = [];
 
-    /// <summary>中选者在盘面上的位置。</summary>
-    private int _winnerSector;
-
-    /// <summary>停到那条缝上时的角度。</summary>
+    /// <summary>停到那条缝上时的角度。第一段的终点。</summary>
     private double _boundaryAngle;
 
-    /// <summary>最终（滑进中选格）的角度。</summary>
+    /// <summary>
+    /// 最终（滑进中选格）的角度。第二段的终点也是它，<see cref="SnapToEnd"/> 也落在这里。
+    /// </summary>
+    /// <remarks>
+    /// 盘面上哪一格是中选者不再单独记：高亮跟着指针走，停稳时指针指着的自然就是他。
+    /// </remarks>
     private double _finalAngle;
 
     /// <summary>转到缝上用多久。</summary>
     private TimeSpan _holdDuration = TimeSpan.FromSeconds(6);
 
-    /// <summary>从缝滑进格子里用多久。</summary>
+    /// <summary>从缝滑进格子里用多久。它同时也是第二段动画的时长。</summary>
     private TimeSpan _slideDuration = TimeSpan.FromSeconds(0.35);
-
-    /// <summary>整段动画的总时长，含滑进去之后那段定格。</summary>
-    private TimeSpan _planTotal = TimeSpan.FromSeconds(6.35);
 
     /// <summary>转盘半径。</summary>
     private double _radius;
@@ -74,8 +73,20 @@ internal sealed class WheelAnimation : RevealAnimationBase
     /// <summary>一个正方形：轮盘外圈，再加上顶部指针要占的那点地方。</summary>
     public override Size StageSize => _stageSize;
 
+    /// <summary>
+    /// 此刻指针指着的那一格，也就是盘面上被点亮的那一格。
+    /// </summary>
+    /// <remarks>
+    /// 渲染只用这一个出处来决定谁亮，测试也验它——「高亮必须永远等于指针的位置」
+    /// 就是防剧透的全部内容。这里的判定复用 <see cref="WheelLayout.SectorUnderPointer"/>，
+    /// 和「指针最后停在中选者身上」那条用的是同一个函数，两边不可能算出不一样的结果。
+    /// </remarks>
+    internal int HighlightedSectorIndex =>
+        // 喵~防御：属性还没被动画写过时可能是 NaN，按「还没开始转」处理。
+        WheelLayout.SectorUnderPointer(double.IsFinite(Angle) ? Angle : 0, _sectors.Count);
+
     /// <inheritdoc/>
-    public override void Load(RevealAnimationPlan plan)
+    protected override void LoadPlan(RevealAnimationPlan plan)
     {
         // 喵~防御：装错了计划类型或者盘面不足两格时什么都不画，也好过抛异常把结果卡住。
         if (plan is not WheelPlan wheel || wheel.Sectors.Count < 2)
@@ -86,12 +97,11 @@ internal sealed class WheelAnimation : RevealAnimationBase
         }
 
         _sectors = wheel.Sectors;
-        _winnerSector = wheel.WinnerSector;
         _boundaryAngle = wheel.BoundaryAngle;
         _finalAngle = wheel.FinalAngle;
         _holdDuration = wheel.HoldDuration;
+        // 第二段的时长就是「滑半格」的时间，两段加起来正好是动作时长；定格由基类在播完之后等。
         _slideDuration = wheel.SlideDuration;
-        _planTotal = wheel.Total;
 
         // 半径按字号档位换算，保证和插件其它部分同一套视觉尺度。
         _radius = RevealFontSize * 2.2;
@@ -102,13 +112,12 @@ internal sealed class WheelAnimation : RevealAnimationBase
 
 
     /// <summary>
-    /// 按排片表造出这两段动画。抽出来是为了让「定格那段留白真的存在」能被单测验到。
+    /// 按排片表造出这两段动画。抽出来是为了让「两段合起来正好是动作时长」能被单测验到。
     /// </summary>
     /// <remarks>
-    /// 第一段转到缝上，第二段滑进中选格并<b>接着停住</b>：
-    /// 第二段的 <c>Duration</c> 是「总时长 - 第一段」，而它的终点关键帧停在
-    /// <c>_slideDuration</c>（也就是排片表的 <c>MotionTotal</c>），
-    /// 两者之间的差值就是定格——指针停在格子上不动，让人看清停在哪一位。
+    /// 第一段转到缝上、第二段滑进中选格，两段的 <c>Duration</c> 加起来正好是排片表的动作时长，
+    /// 各自的缓动曲线因此都铺满自己那一段。
+    /// 定格不在这里：基类在播完之后原地等一会儿，那时指针停在格子上不动，让人看清停在哪一位。
     /// </remarks>
     internal override IReadOnlyList<Animation> BuildAnimations()
     {
@@ -136,13 +145,14 @@ internal sealed class WheelAnimation : RevealAnimationBase
             Setters = { new Setter(AngleProperty, _boundaryAngle) }
         });
 
-        // 第二段的长度 = 总时长 - 第一段 = 滑进格子的时间 + 定格。
-        // 喵~防御：排片表被改坏、总时长比第一段还短时，退回「只滑不停」，
-        // 免得时长变成 0 或负数——那样 Avalonia 算 cue 会当场抛异常。
-        var slideLength = _planTotal - _holdDuration;
+        // 第二段的时长就是滑半格的时间。两段加起来 = 排片表的动作时长，
+        // 缓动曲线各自铺满自己那一段；定格由基类在播完之后等。
+        var slideLength = _slideDuration;
+        // 喵~防御：排片表被改坏、滑入时长不是正数时，退回默认那半格的时间——
+        // 时长是 0 的话 Avalonia 算 cue 会得到 0/0，当场抛异常，整段动画就没了。
         if (slideLength <= TimeSpan.Zero)
         {
-            slideLength = _slideDuration;
+            slideLength = TimeSpan.FromSeconds(0.35);
         }
 
         // 第二段：从缝上挪半格滑进中选那一格。带一点回弹，像被指针「吸」进去。
@@ -187,8 +197,12 @@ internal sealed class WheelAnimation : RevealAnimationBase
         var angle = double.IsFinite(Angle) ? Angle : 0;
         // 每一格占多少度。
         var sweep = 360.0 / _sectors.Count;
-        // 停稳了没有：滑到终点就说明中选者已经在指针下面了。
-        var settled = Math.Abs(angle - _finalAngle) < 0.5;
+        // 指针此刻指着的那一格。<b>高亮就跟着它走，而不是预先点亮中选者那一格。</b>
+        // 预先点亮会剧透：第二段的滑动方向是两种之一，其中一种会让指针先落在中选者旁边那一格上，
+        // 再滑进中选者——那段时间里指针还没到，中选者却已经亮着了，等于提前揭晓。
+        // 跟着指针走就没有这个问题：高亮的位置永远等于指针的位置，看不出任何额外信息，
+        // 而且转起来的时候像有一道光跟着指针扫过盘面。2026-09-15 主人提的改进。
+        var pointerSector = HighlightedSectorIndex;
         // 文字横向能占多宽：扇形中线上那一段弦长，取九成，免得字压到相邻格子上。
         var labelRadius = _radius * 0.64;
         var maxTextWidth = 2 * labelRadius * Math.Sin(sweep / 2 * Math.PI / 180) * 0.9;
@@ -202,17 +216,17 @@ internal sealed class WheelAnimation : RevealAnimationBase
             var end = start + sweep;
             // 这一格的扇形几何。
             var geometry = BuildSector(center, _radius, start, end);
-            // 中选者那一格，而且在停稳之后，才用强调色点亮。
-            var isWinner = settled && i == _winnerSector;
+            // 指针指着的那一格就点亮。停稳时指针正好停在中选者身上，所以点亮的那格必然是他。
+            var isHighlighted = i == pointerSector;
 
             // 底色深浅交替，相邻两格才分得开。
-            var fill = isWinner
+            var fill = isHighlighted
                 ? new SolidColorBrush(Accent, 0.38)
                 : new SolidColorBrush(i % 2 == 0
                     ? Color.FromRgb(0x24, 0x24, 0x2C)
                     : Color.FromRgb(0x1B, 0x1B, 0x22));
-            // 描边：中选者亮一些。
-            var border = isWinner
+            // 描边：指针指着的那一格亮一些。
+            var border = isHighlighted
                 ? new SolidColorBrush(Accent, 0.9)
                 : new SolidColorBrush(Colors.White, 0.16);
 
@@ -225,8 +239,8 @@ internal sealed class WheelAnimation : RevealAnimationBase
             // 名字占用的矩形：横向按弦长限制，纵向是一行高。
             var labelArea = new Rect(labelCenter.X - maxTextWidth / 2,
                 labelCenter.Y - lineHeight / 2, maxTextWidth, lineHeight);
-            // 定格的中选者用强调色，其余是白的。
-            IBrush textBrush = isWinner ? new SolidColorBrush(Accent) : Brushes.White;
+            // 指针指着的那一格用强调色，其余是白的。
+            IBrush textBrush = isHighlighted ? new SolidColorBrush(Accent) : Brushes.White;
             // 名字横向摆正画出来就行——扇形排成一圈，横排永远读得正。
             DrawFittedText(context, _sectors[i], labelArea, lineHeight * 0.82, textBrush);
         }

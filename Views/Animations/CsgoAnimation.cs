@@ -52,11 +52,17 @@ internal sealed class CsgoAnimation : RevealAnimationBase
     /// <summary>滚到终点时的平移量。用来判断「停稳了没有」。</summary>
     private double _targetOffset;
 
-    /// <summary>这段动画的总时长，装载时从排片表抄下来。</summary>
-    private TimeSpan _planTotal = TimeSpan.FromSeconds(4);
-
-    /// <summary>动作停下的时刻。滚到这里的瞬间就定格了，之后到总时长为止是静止。</summary>
-    private TimeSpan _motionTotal = TimeSpan.FromSeconds(3.2);
+    /// <summary>
+    /// 动作停下的时刻。滚到这里的瞬间就定格了。
+    /// </summary>
+    /// <remarks>
+    /// <b>它同时也是这段动画的 <c>Duration</c>。</b>定格不走动画时长，
+    /// 而是由 <see cref="RevealAnimationBase.PlayAsync"/> 在播完之后原地等一会儿——
+    /// 把定格算进 <c>Duration</c> 会让终点关键帧的 cue 从 1.0 掉到 0.8，
+    /// 而减速曲线在 0.8 处已经走完了 99%，整段减速会被挤进前 41% 的时间里，
+    /// 观感就是「猛地冲过去然后干等」。2026-09-15 主人报的「减速过程消失了」就是这个。
+    /// </remarks>
+    private TimeSpan _motionTotal = TimeSpan.FromSeconds(4);
 
     /// <summary>算好的舞台尺寸，等于排片表给的可视区大小。</summary>
     private Size _stageSize;
@@ -77,7 +83,7 @@ internal sealed class CsgoAnimation : RevealAnimationBase
     public override Size StageSize => _stageSize;
 
     /// <inheritdoc/>
-    public override void Load(RevealAnimationPlan plan)
+    protected override void LoadPlan(RevealAnimationPlan plan)
     {
         // 喵~防御：装错了计划类型时什么都不画，也好过抛异常把结果卡住。
         if (plan is not CsgoPlan csgo)
@@ -95,8 +101,7 @@ internal sealed class CsgoAnimation : RevealAnimationBase
         _slotHeight = csgo.SlotHeight;
         _gap = csgo.Gap;
         _targetOffset = csgo.TargetOffset;
-        // 总时长含定格，动作在「总时长 - 定格」那一刻就停了。
-        _planTotal = csgo.Total;
+        // 动作时长就是排片表的 MotionTotal；定格由基类在播完之后等。
         _motionTotal = csgo.MotionTotal;
         // 可视区多大，舞台就多大——平移量本来就是按这个宽度算出来的，两者必须一致。
         _stageSize = new Size(csgo.ViewportWidth, csgo.ViewportHeight);
@@ -110,15 +115,16 @@ internal sealed class CsgoAnimation : RevealAnimationBase
     /// <b><see cref="Animation.Duration"/> 必须写</b>：Avalonia 拿它当分母把 <c>KeyTime</c>
     /// 换算成 cue，漏了会算出 <c>0/0</c> 并当场抛异常（见 <see cref="ScrollNameAnimation.BuildAnimations"/> 的说明）。
     /// <para/>
-    /// 终点落在 <c>_motionTotal</c> 而不是总时长上：两者之间那一截就是定格——
-    /// 方块停在指针下、高亮着不动，让人看清开出来的是什么。
+    /// 终点落在动作时长上，也就是 cue = 1.0：<b>减速曲线因此铺满整段</b>。
+    /// 定格不在这里——基类在播完之后原地等一会儿，那时方块已经停在指针下、高亮着不动。
     /// </remarks>
     internal override IReadOnlyList<Animation> BuildAnimations()
     {
         // 从静止开始，一路加速冲过去再减速停住。
         var animation = new Animation
         {
-            Duration = _planTotal,
+            // 动画时长就是动作时长，缓动曲线铺满全程。
+            Duration = _motionTotal,
             FillMode = FillMode.Forward,
             // 共用减速曲线：起手快、收尾一点点挪，才有「刹住」的手感。
             Easing = RevealEasing.Decelerate
@@ -131,7 +137,7 @@ internal sealed class CsgoAnimation : RevealAnimationBase
             Setters = { new Setter(OffsetProperty, 0.0) }
         });
 
-        // 终点：中选者那一块正好压在指针下面。落点在动作结束时刻，之后留着定格。
+        // 终点：中选者那一块压在指针附近。落点在动作时长的末尾，cue 因此正好是 1。
         animation.Children.Add(new KeyFrame
         {
             KeyTime = _motionTotal,

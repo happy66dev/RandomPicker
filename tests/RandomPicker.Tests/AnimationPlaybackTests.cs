@@ -55,7 +55,7 @@ public class AnimationPlaybackTests
     /// 一次把四种样式都验掉，是因为这几条性质<b>本来就该对每个样式都成立</b>：
     /// <list type="number">
     /// <item><c>总时长 - 动作结束时刻 == 定格时长</c>——少了它最后一帧会被结果顶掉；</item>
-    /// <item><c>各段 Duration 之和 == 总时长</c>——转盘是两段，其余是一段；</item>
+    /// <item><c>各段 Duration 之和 == 动作时长</c>——转盘是两段，其余是一段；</item>
     /// <item><c>关键帧的最大时刻 == 动作结束时刻</c>——动作确实在排片表说的那一刻停；</item>
     /// <item>每个 cue 都在 0~1 里——Avalonia 拿 <c>KeyTime / Duration</c> 当 cue，
     ///       越界会当场抛异常（某次漏写 <c>Duration</c> 就是这么炸的）；</item>
@@ -87,7 +87,10 @@ public class AnimationPlaybackTests
         var animations = control.BuildAnimations();
         Assert.NotEmpty(animations);
 
-        // ② 各段 Duration 之和 == 总时长（转盘两段、其余一段）。
+        // ② 各段 Duration 之和 == 动作时长（转盘两段、其余一段）。
+        // 定格不算在内：它由控件的基类在播完之后原地等，不占动画时长。
+        // 把定格算进 Duration 会让关键帧的 cue 整体缩短——CSGO 那次就是这么坏的，
+        // 终点 cue 从 1.0 掉到 0.8，减速曲线在 0.8 处已经走完 99%，整段减速被挤进前 41%。
         var sum = TimeSpan.Zero;
         foreach (var animation in animations)
         {
@@ -97,7 +100,7 @@ public class AnimationPlaybackTests
             sum += animation.Duration;
         }
 
-        Assert.Equal(plan.Total, sum);
+        Assert.Equal(plan.MotionTotal, sum);
 
         // ③④ 逐段把关键帧换算成「绝对时刻」和 cue，两者都必须在合法范围里。
         // 多段是**依次**播的，所以后面那段的时刻要加上前面各段的时长。
@@ -121,8 +124,29 @@ public class AnimationPlaybackTests
             elapsedBefore += animation.Duration;
         }
 
-        // ③ 动作确实在排片表说的那一刻停下，之后到总时长为止都是定格。
-        Assert.Equal(plan.MotionTotal, latestKeyTime);
+        // ③ 最后一段动作确实铺到了动作时长的末尾。分两种情形：
+        //    · CSGO / 老虎机 / 转盘的终点帧本身就是终值，它落在末尾；
+        //    · 滚动名字的末帧是「<b>开始显示</b>中选者」的那一刻，之后还要停它自己那一格，
+        //      所以「末帧时刻 + 末帧停留」才该等于末尾。
+        // 后一种写法顺带钉住了一个真出过的 bug：写关键帧时把「先累加再取值」的顺序弄反了，
+        // 每一帧占用的都是下一帧的时长——中选者那格本该停最久，却被倒数第二个名字占掉，
+        // 他一出现就进定格（2026-09-15 主人说的「他最后变慢的过程似乎消失了」）。
+        // 那样算出来的「末帧时刻 + 末帧停留」会多出整整一格，这条断言当场就红。
+        if (plan is ScrollPlan scrollPlan)
+        {
+            // 末帧自己那一格停留多久。
+            var lastFrameDwell = TimeSpan.FromSeconds(scrollPlan.Intervals[^1]);
+            // 逐项换算成 TimeSpan 会取整到 tick，攒下来的零头允许 1 毫秒的误差。
+            var gap = (plan.MotionTotal - (latestKeyTime + lastFrameDwell)).Duration();
+
+            Assert.True(gap < TimeSpan.FromMilliseconds(1),
+                $"{style}: 末帧时刻 {latestKeyTime} 加上它那一格 {lastFrameDwell} 之后"
+                + $"离动作末尾 {plan.MotionTotal} 还差 {gap}");
+        }
+        else
+        {
+            Assert.Equal(plan.MotionTotal, latestKeyTime);
+        }
     }
 
     /// <summary>按样式造出对应的动画控件。</summary>
@@ -289,6 +313,163 @@ public class AnimationPlaybackTests
         Assert.Equal(0.0, firstSlot[0].Value);
         Assert.Equal(slot.MotionTotal, firstSlot[^1].Time);
         Assert.Equal(1.0, firstSlot[^1].Value);
+    }
+
+    /// <summary>
+    /// CSGO：终点关键帧必须落在动画的<b>最后一刻</b>（cue = 1），减速曲线才铺得满。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是为 2026-09-15「csgo 减速过程消失了」建的。</b>
+    /// 当时终点被钉在「总时长 - 定格」上，cue 因此只有 0.8；而
+    /// <c>CubicEaseOut</c> 在 0.8 处已经走完了 99%（<c>1-0.2³ ≈ 0.992</c>），
+    /// 也就是滚动在动画的第 41% 就冲完了，后面一大截全是干等——
+    /// 可辨认的减速被整个挤没了。
+    /// 现在定格交给基类在播完之后等，动画时长就是动作时长，终点 cue 必须是 1。
+    /// </remarks>
+    [AvaloniaFact]
+    public void CsgoAnimation_LandsTheEndKeyFrameOnTheVeryEnd()
+    {
+        var settings = new PickerSettings { AnimationStyle = RevealAnimationStyle.Csgo };
+        var plan = RevealAnimationPlanner.Build(RevealAnimationStyle.Csgo, Names, "张三", settings);
+        Assert.NotNull(plan);
+
+        var control = new CsgoAnimation(BaseSettings.RevealFontSize, Colors.Cyan);
+        control.Load(plan);
+        var animation = Assert.Single(control.BuildAnimations());
+
+        // 动画时长 = 动作时长，定格不占这里的时长。
+        Assert.Equal(plan.MotionTotal, animation.Duration);
+
+        // 终点关键帧落在最后一刻，cue 正好是 1——缓动曲线因此能铺满整段。
+        Assert.NotEmpty(animation.Children);
+        Assert.Equal(1.0, CueOf(animation.Children[^1], animation.Duration), 9);
+
+        // 用的确实是那条减速曲线（起手快、收尾一点点挪）。
+        Assert.IsAssignableFrom<CubicEaseOut>(animation.Easing);
+    }
+
+    /// <summary>
+    /// CSGO 的停点是随机的：指针不必每次都压在方块正中，但底下必须还是中选者那一块。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是为 2026-09-15「真实情况下停在中间概率很低」建的。</b>
+    /// 每次都精确居中一眼假——真实开箱是连续刹停的，指针落在方块内的哪个位置本来就随机。
+    /// 但随机只能改变「停在方块的哪个位置」，绝不能改变「停在哪一块」。
+    /// </remarks>
+    [Fact]
+    public void CsgoTrack_StopOffsetMovesTheStopButNeverTheWinner()
+    {
+        string[] roster = ["张三", "李四", "王五"];
+        var offsets = new List<double>();
+
+        // 沿着 0~1 均匀取几个停点，每个都验一遍。
+        foreach (var roll in new[] { 0.0, 0.25, 0.5, 0.75, 0.999 })
+        {
+            var plan = CsgoTrack.Build(roster, "李四", 400, 120, 60, 80, 8,
+                TimeSpan.FromSeconds(4), ItemRarity.Covert, null, _ => 0, () => roll);
+            Assert.NotNull(plan);
+
+            // 指针底下仍然是中选者那一块。
+            var under = CsgoTrack.IndexAtOffset(plan.TargetOffset, plan.SlotWidth, plan.Gap,
+                plan.ViewportWidth);
+            Assert.Equal(plan.WinnerTrackIndex, under);
+
+            // 偏移量不超过规定的上限——越过了指针就会指到隔壁那一块上。
+            var centered = CsgoTrack.OffsetFor(plan.WinnerTrackIndex, plan.SlotWidth, plan.Gap,
+                plan.ViewportWidth);
+            var jitter = Math.Abs(plan.TargetOffset - centered);
+            Assert.True(jitter <= plan.SlotWidth * CsgoTrack.MaxStopJitterRatio + 1e-6,
+                $"停点偏了 {jitter}，超过了 {plan.SlotWidth * CsgoTrack.MaxStopJitterRatio} 的上限");
+
+            offsets.Add(plan.TargetOffset);
+        }
+
+        // 停点确实随随机数在变——不是每次都停在同一处。
+        Assert.True(offsets.Distinct().Count() > 1, "停点没有随随机数变化，等于还是每次都停在同一个位置");
+    }
+
+    /// <summary>
+    /// 转盘：点亮的那一格必须永远是指针指着的那一格，绝不提前亮出中选者。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是为 2026-09-15「转盘如果回转的话会有剧透」建的。</b>
+    /// 原来点亮的是「中选者那一格」再加一个「停稳了没有」的判断，而第二段的滑动方向是两种之一：
+    /// 其中一种会让指针先落在中选者<b>旁边</b>那一格上、再滑进中选者。
+    /// 那段时间里指针还没到，中选者却已经亮着了——答案提前泄露。
+    /// 现在高亮只跟着指针走，两者在任何角度下都必须一致。
+    /// </remarks>
+    [AvaloniaTheory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void WheelAnimation_HighlightAlwaysFollowsThePointer(int boundaryPick)
+    {
+        // 固定「停在哪条缝上」，把滑动方向钉成确定的：0 表示往一侧滑、1 表示往另一侧滑。
+        // 不固定的话这一盘的几何随机，断言时有时无，等于没测。
+        var settings = new PickerSettings { AnimationStyle = RevealAnimationStyle.Wheel };
+        var plan = RevealAnimationPlanner.Build(RevealAnimationStyle.Wheel,
+            ["张三", "李四", "王五", "赵六"], "王五", settings, _ => boundaryPick);
+        var wheel = Assert.IsType<WheelPlan>(plan);
+
+        var control = new WheelAnimation(BaseSettings.RevealFontSize, Colors.Cyan);
+        control.Load(wheel);
+
+        // 从缝上的角度一路滑到终点，逐点检查高亮和指针是不是同一格。
+        var from = wheel.BoundaryAngle;
+        var to = wheel.FinalAngle;
+        // 滑动途中是否出现过「指针还不在中选者身上」的时刻。
+        var sawPointerOffTheWinner = false;
+
+        for (var step = 0; step <= 100; step++)
+        {
+            var angle = from + (to - from) * step / 100.0;
+            control.Angle = angle;
+
+            // 高亮的那一格 == 指针指着的那一格。这就是防剧透的全部内容。
+            Assert.Equal(WheelLayout.SectorUnderPointer(angle, wheel.Sectors.Count),
+                control.HighlightedSectorIndex);
+
+            if (control.HighlightedSectorIndex != wheel.WinnerSector)
+            {
+                sawPointerOffTheWinner = true;
+            }
+        }
+
+        // 停稳时指针一定落在中选者身上，高亮自然也在他身上。
+        control.Angle = to;
+        Assert.Equal(wheel.WinnerSector, control.HighlightedSectorIndex);
+
+        // 其中一个方向确实存在「指针还没滑到中选者」的阶段。
+        // 这一盘才有「提前亮答案」的风险，上面那条比对才真的验到了东西；
+        // 另一个方向指针全程都在中选者身上，没有可泄露的信息。
+        if (wheel.SlideDirection > 0)
+        {
+            Assert.True(sawPointerOffTheWinner,
+                "这个方向下滑入途中指针一直没离开中选者，说明几何和预期不符，这条测试等于没测");
+        }
+    }
+
+    /// <summary>控件的定格时长从排片表来，而不是各自写死一个数。</summary>
+    /// <remarks>
+    /// 四个样式各写一遍的话，漏掉哪个哪个就不定格，而症状只是「最后一帧被结果顶掉」，
+    /// 不报任何错。统一抄排片表，这一条把「抄到了」钉住。
+    /// </remarks>
+    [AvaloniaTheory]
+    [InlineData(RevealAnimationStyle.Scroll)]
+    [InlineData(RevealAnimationStyle.Csgo)]
+    [InlineData(RevealAnimationStyle.Slot)]
+    [InlineData(RevealAnimationStyle.Wheel)]
+    public void Load_TakesTheSettleDurationFromThePlan(RevealAnimationStyle style)
+    {
+        var settings = new PickerSettings { AnimationStyle = style };
+        var plan = RevealAnimationPlanner.Build(style, Names, "张三", settings);
+        Assert.NotNull(plan);
+
+        var control = CreateControl(style);
+        control.Load(plan);
+
+        // 定格时长就是排片表上那一段，而且确实是设定的值。
+        Assert.Equal(plan.Settle, control.Settle);
+        Assert.Equal(TimeSpan.FromSeconds(RevealAnimationPlan.SettleSeconds), control.Settle);
     }
 
     /// <summary>按 Avalonia 的算法，把一个关键帧换算成 cue。</summary>

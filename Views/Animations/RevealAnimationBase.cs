@@ -55,8 +55,40 @@ internal abstract class RevealAnimationBase : Control
     /// <summary>这块动画需要多大地方。装好排片表之后才是准确值。</summary>
     public abstract Size StageSize { get; }
 
+    /// <summary>
+    /// 动作播完之后画面还要静止多久，单位：时间。装载排片表时从它上面抄下来。
+    /// </summary>
+    /// <remarks>
+    /// 这段静止<b>不算在动画时长里</b>：动画只负责把进度推到终点，推完就地松手，
+    /// 属性停在终值上不动（<c>FillMode.Forward</c> 在放下绑定时会把终值写成本地值）。
+    /// <para/>
+    /// <b>为什么不干脆把定格也算进 <c>Duration</c>：</b>那样会让关键帧的 cue 整体缩短。
+    /// CSGO 那次就是这么坏的——终点从此落在 0.8 而不是 1.0，而
+    /// <c>CubicEaseOut</c> 在 0.8 处已经走完了 99%（<c>1-0.2³</c>），
+    /// 于是整段减速被挤进前 41% 的时间里，后面一大截是干等，
+    /// 2026-09-15 主人报的「csgo 减速过程消失了」就是这个。
+    /// 定格挪到动画之外以后，缓动曲线又能铺满整段动作了。
+    /// <para/>
+    /// 声明成 <c>protected internal</c>：子类要用它，测试要看它。
+    /// </remarks>
+    protected internal TimeSpan Settle { get; private set; }
+
     /// <summary>装载排片表。必须在 <see cref="PlayAsync"/> 之前调用。</summary>
-    public abstract void Load(RevealAnimationPlan plan);
+    public void Load(RevealAnimationPlan plan)
+    {
+        // 定格时长从排片表抄下来。喵~防御：排片表是空的（调用方写错）时按「不定格」处理。
+        Settle = plan?.Settle ?? TimeSpan.Zero;
+        // 具体怎么摆，交给各个样式自己决定。
+        LoadPlan(plan);
+    }
+
+    /// <summary>各个样式自己的装载逻辑。</summary>
+    /// <remarks>
+    /// 拆成两级而不是让各个样式直接覆写 <see cref="Load"/>，是为了让「抄定格时长」
+    /// 这件事只有一处写法——四个样式各写一遍的话，漏掉哪个哪个就不定格，
+    /// 而这个毛病只表现为「最后一帧被结果顶掉」，不会报错。
+    /// </remarks>
+    protected abstract void LoadPlan(RevealAnimationPlan plan);
 
     /// <summary>
     /// 按排片表造出这段动画要播的一个或几个 <see cref="Animation"/>，<b>按播放顺序</b>排好。
@@ -71,17 +103,28 @@ internal abstract class RevealAnimationBase : Control
     internal abstract IReadOnlyList<Animation> BuildAnimations();
 
     /// <summary>
-    /// 播放这段动画。被取消时抛 <see cref="OperationCanceledException"/>。
+    /// 播放这段动画，播完再原地静止 <see cref="Settle"/> 那么久。被取消时抛 <see cref="OperationCanceledException"/>。
     /// </summary>
     /// <remarks>
     /// 多段必须<b>依次</b>播完再放下一个，不能一起起播——转盘那两段写的是同一个角度属性，
     /// 同时跑会互相盖掉，看起来就是「转到一半突然跳过去」。
+    /// <para/>
+    /// 定格接在动作之后：每一段都播完了，进度停在终点，画面就是静止的，
+    /// 所以这里只要等一会儿就好，不需要再驱动任何属性。
+    /// 取消令牌一路带下去，主人点「跳」或者窗口要关时这里会立刻退出。
     /// </remarks>
     public async Task PlayAsync(CancellationToken token)
     {
         foreach (var animation in BuildAnimations())
         {
             await animation.RunAsync(this, token);
+        }
+
+        // 动作演完，画面停在终点上不动，让主人看清结果。
+        // 喵~防御：排片表说不用定格（时长为 0 或负数）时直接跳过，别白等一个零。
+        if (Settle > TimeSpan.Zero)
+        {
+            await Task.Delay(Settle, token);
         }
     }
 

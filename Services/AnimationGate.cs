@@ -110,7 +110,11 @@ internal static class RevealAnimationPlanner
     /// <param name="winner">中选者。</param>
     /// <param name="settings">插件设置。</param>
     /// <param name="pickIndexSelector">
-    /// 从 0 到 n-1 里挑一个下标的函数，用来抽帧里显示的名字、装饰用品质、以及转盘扇区。
+    /// 从 0 到 n-1 里挑一个下标的函数，用来给 CSGO 的方块摇装饰用品质、以及挑转盘扇区。
+    /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
+    /// </param>
+    /// <param name="stopOffsetSelector">
+    /// 返回一个 0~1 的随机数，用来决定 CSGO 的指针停在方块内的哪个位置。
     /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
     /// </param>
     /// <returns>排片表；数据不满足这个样式的要求时返回 <c>null</c>，由上层降级成不播动画。</returns>
@@ -119,12 +123,16 @@ internal static class RevealAnimationPlanner
     /// 这里再给每种样式都补上同一段 <see cref="RevealAnimationPlan.SettleSeconds"/>。
     /// 集中在一处是为了让四种样式的收尾节奏必然一致——
     /// 分散到四个地方写，早晚会有一个样式被漏掉（这个 bug 就真发生过两次）。
+    /// <para/>
+    /// 定格只是记在排片表上的时长，<b>不参与动画本身</b>：
+    /// <see cref="RevealAnimationBase.PlayAsync"/> 播完动作之后原地等这么一会儿。
     /// </remarks>
     public static RevealAnimationPlan? Build(RevealAnimationStyle style,
         IReadOnlyList<string>? names, string? winner, PickerSettings settings,
-        Func<int, int>? pickIndexSelector = null)
+        Func<int, int>? pickIndexSelector = null,
+        Func<double>? stopOffsetSelector = null)
     {
-        var plan = BuildMotion(style, names, winner, settings, pickIndexSelector);
+        var plan = BuildMotion(style, names, winner, settings, pickIndexSelector, stopOffsetSelector);
 
         // 喵~防御：造不出排片表（无动画，或数据不满足这个样式）时原样返回 null。
         if (plan is null)
@@ -144,13 +152,17 @@ internal static class RevealAnimationPlanner
     /// <param name="winner">中选者。</param>
     /// <param name="settings">插件设置。</param>
     /// <param name="pickIndexSelector">
-    /// 从 0 到 n-1 里挑一个下标的函数，用来抽帧里显示的名字、装饰用品质、以及转盘扇区。
+    /// 从 0 到 n-1 里挑一个下标的函数，用来给 CSGO 的方块摇装饰用品质、以及挑转盘扇区。
+    /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
+    /// </param>
+    /// <param name="stopOffsetSelector">
+    /// 返回一个 0~1 的随机数，用来决定 CSGO 的指针停在方块内的哪个位置。
     /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
     /// </param>
     /// <returns>排片表；数据不满足这个样式的要求时返回 <c>null</c>。</returns>
     private static RevealAnimationPlan? BuildMotion(RevealAnimationStyle style,
         IReadOnlyList<string>? names, string? winner, PickerSettings settings,
-        Func<int, int>? pickIndexSelector)
+        Func<int, int>? pickIndexSelector, Func<double>? stopOffsetSelector)
     {
         // 喵~防御：设置对象不允许为 null。
         ArgumentNullException.ThrowIfNull(settings);
@@ -167,7 +179,7 @@ internal static class RevealAnimationPlanner
             {
                 // 滚动名字：只要名单里有中选者就能播。
                 var duration = AnimationGate.DurationOf(style, settings);
-                return ScrollTicks.BuildPlan(names, winner, duration.TotalSeconds, pickIndexSelector);
+                return ScrollTicks.BuildPlan(names, winner, duration.TotalSeconds);
             }
 
             case RevealAnimationStyle.Csgo:
@@ -184,7 +196,7 @@ internal static class RevealAnimationPlanner
                 var winnerRarity = ItemRarityTable.Roll(settings.RarityWeights, pickIndexSelector);
                 return CsgoTrack.Build(names, winner,
                     viewportWidth, viewportHeight, slotWidth, slotHeight, gap, duration,
-                    winnerRarity, settings.RarityWeights, pickIndexSelector);
+                    winnerRarity, settings.RarityWeights, pickIndexSelector, stopOffsetSelector);
             }
 
             case RevealAnimationStyle.Slot:
@@ -193,7 +205,7 @@ internal static class RevealAnimationPlanner
                 // 这种名单上回退到滚动名字——总比演一个残缺的名字强。
                 if (!SlotMachine.IsUsable(names))
                 {
-                    return BuildMotion(RevealAnimationStyle.Scroll, names, winner, settings, pickIndexSelector);
+                    return BuildMotion(RevealAnimationStyle.Scroll, names, winner, settings, pickIndexSelector, stopOffsetSelector);
                 }
 
                 // 格数 = 最长名字的字数（夹在 2~4），总时长按格数摊成「每格多少秒」。

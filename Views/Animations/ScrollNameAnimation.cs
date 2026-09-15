@@ -43,10 +43,14 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
     /// <summary>一行文字占多高。滚动时上下两行就是这个间距。</summary>
     private double _lineHeight;
 
-    /// <summary>这一段动画的总时长。既是 <c>Animation.Duration</c>，也就是排片表里的 Total。</summary>
-    private TimeSpan _planTotal;
-
-    /// <summary>动作停下的时刻。末帧落在这儿，之后到总时长为止是定格。</summary>
+    /// <summary>
+    /// 动作停下的时刻。末帧落在这儿，之后到排片表的总时长为止是定格。
+    /// </summary>
+    /// <remarks>
+    /// <b>它同时也是这段动画的 <c>Duration</c>。</b>定格不走动画时长，
+    /// 而是由 <see cref="RevealAnimationBase.PlayAsync"/> 在播完之后原地等一会儿——
+    /// 把定格算进 <c>Duration</c> 会让关键帧的 cue 整体缩短，缓动曲线就走不满了。
+    /// </remarks>
     private TimeSpan _motionTotal;
 
     /// <summary>算好的舞台尺寸。</summary>
@@ -70,14 +74,13 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
     public override Size StageSize => _stageSize;
 
     /// <inheritdoc/>
-    public override void Load(RevealAnimationPlan plan)
+    protected override void LoadPlan(RevealAnimationPlan plan)
     {
         // 喵~防御：装错了计划类型（调用方写错）时什么都不画，也好过抛异常把结果卡住。
         if (plan is not ScrollPlan scroll)
         {
             _frames = [];
             _intervals = [];
-            _planTotal = TimeSpan.Zero;
             _motionTotal = TimeSpan.Zero;
             _stageSize = default;
             return;
@@ -85,8 +88,7 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
 
         _frames = scroll.Frames;
         _intervals = scroll.Intervals;
-        // 总时长照抄排片表；动作在「总时长 - 定格」那一刻就停了，末帧落在那里。
-        _planTotal = scroll.Total;
+        // 动作时长就是排片表的 MotionTotal，末帧落在那一刻；定格由基类在播完之后等。
         _motionTotal = scroll.MotionTotal;
         _lineHeight = RevealFontSize * 1.35;
 
@@ -122,39 +124,44 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
     /// 那个异常会被上层「绝不吞掉结果」的兜底接住，表现是<b>结果照出、动画全无、还不报错</b>——
     /// 2026-09-15 主人报的「动画并没有触发」就是这个。
     /// <para/>
-    /// 时长取排片表的总时长（含定格），而末帧落在 <c>MotionTotal</c> 上，
-    /// 两者之间那一截就是定格：中选者的名字停住不动，让人看清。
+    /// 时长就是排片表的 <c>MotionTotal</c>（动作时长），末帧正好落在这一刻上，
+    /// 缓动曲线因此铺满整段动作。定格不在这里：基类在播完之后原地等一会儿，
+    /// 那时进度停在终点、画面静止，中选者的名字就这么停着让人看清。
     /// </remarks>
     internal override IReadOnlyList<Animation> BuildAnimations()
     {
         // 帧间线性插值，减速效果全部由「间隔越来越长」来表达。
         var animation = new Animation
         {
-            // 总时长取排片表声明的那个值：它和末帧落在的时刻同源，末帧的 cue 才落在 0~1 里。
-            Duration = _planTotal,
+            // 动画时长就是动作时长。定格不算在这里，播完由基类原地等一会儿。
+            Duration = _motionTotal,
             FillMode = FillMode.Forward,
             Easing = new LinearEasing()
         };
 
-        // 起点：第 0 帧，时刻 0。
-        animation.Children.Add(new KeyFrame
-        {
-            KeyTime = TimeSpan.Zero,
-            Setters = { new Setter(ProgressProperty, 0.0) }
-        });
-
         var elapsed = TimeSpan.Zero;
         for (var i = 0; i < _frames.Count; i++)
         {
-            // 第 i 帧停留的时长；坏值当 0 处理，总和仍然等于排片表给的总时长。
+            // 第 i 帧停留的时长；坏值当 0 处理，不至于把整段时间轴带偏。
             var seconds = double.IsFinite(_intervals[i]) && _intervals[i] > 0 ? _intervals[i] : 0;
+            // 这一帧从「当前已经累加到的时刻」开始显示——<b>先取值，再把这一帧的时长加进去</b>。
+            // 顺序反过来的话，每一帧占用的都是下一帧的时长：中选者那一格本该停留最久
+            // （等比数列的末项，整段里最长的一段），却会被倒数第二个名字占掉，
+            // 他自己一出现就进定格——2026-09-15 主人说的「他最后变慢的过程似乎消失了」。
+            var at = elapsed;
+            // 喵~防御：坏数据让累加值越过动作时长时，从这里起不再放关键帧。
+            // cue 越过 1 会让 Avalonia 的 Cue 构造函数当场抛异常，整段动画就没了，
+            // 而症状只是「动画没播」——这个坑踩过一次了。
+            if (at >= _motionTotal)
+            {
+                break;
+            }
+
+            // 累加这一帧的时长，给下一帧当时刻用。
             elapsed += TimeSpan.FromSeconds(seconds);
-            // 末帧钉死在「动作结束时刻」上。两个理由：
-            // 一是逐项 TimeSpan.FromSeconds 每次都会取整到 tick，240 项攒下来能差出几微秒，
-            // 不钉的话末帧的 cue 会是 0.9999996 而不是 1；
-            // 二是末帧之后到总时长为止要留出定格，落在总时长上就没有定格了。
-            var at = i == _frames.Count - 1 ? _motionTotal : elapsed;
             // 关键帧落在这个时刻，值就是帧号 i。
+            // 第 0 帧因此正好落在时刻 0 上，不需要另加一个起点帧
+            // ——那会造出两个 cue 相同的帧，Avalonia 算插值时拿它俩当区间会除以零。
             animation.Children.Add(new KeyFrame
             {
                 KeyTime = at,

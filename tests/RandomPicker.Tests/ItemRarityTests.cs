@@ -199,11 +199,15 @@ public sealed class ItemRarityTests
         var names = new[] { "张三", "李四", "王五", "赵六" };
         // 固定选择器，让两次调用的装饰品质也一致，这样差异只可能来自品质权重。
         var selector = Fixed(0);
+        // 停点也得固定住：指针停在方块内的哪个位置同样是随机摇的，
+        // 两次不一样的话「滚动距离一样」这条就没法比了——而这条测的正是品质不参与抽选。
+        Func<double> stopOffset = () => 0.5;
 
         var normal = CsgoTrack.Build(names, "李四", 400, 120, 60, 80, 8,
-            TimeSpan.FromSeconds(4), ItemRarity.MilSpec, [79.92, 15.98, 3.20, 0.64, 0.26], selector);
+            TimeSpan.FromSeconds(4), ItemRarity.MilSpec, [79.92, 15.98, 3.20, 0.64, 0.26], selector,
+            stopOffset);
         var allGold = CsgoTrack.Build(names, "李四", 400, 120, 60, 80, 8,
-            TimeSpan.FromSeconds(4), ItemRarity.RareSpecial, [0, 0, 0, 0, 100], selector);
+            TimeSpan.FromSeconds(4), ItemRarity.RareSpecial, [0, 0, 0, 0, 100], selector, stopOffset);
 
         Assert.NotNull(normal);
         Assert.NotNull(allGold);

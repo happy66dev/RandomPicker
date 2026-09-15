@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 
 namespace ClassIsland.RandomPicker.Services;
 
@@ -23,6 +24,18 @@ internal static class CsgoTrack
     public const int MinRepeats = 3;
 
     /// <summary>
+    /// 停点相对方块中心最多偏多少，单位：方块宽度的比例。
+    /// </summary>
+    /// <remarks>
+    /// <b>指针不是每次都停在方块正中的。</b>真实开箱里滚动是连续刹停的，
+    /// 指针落在方块内的哪个位置基本是随机的，每次都正中对齐反而一眼假。
+    /// 上限定在 45% 而不是 50%，是留一点余量：偏移正好顶到半个方块宽时，
+    /// <see cref="IndexAtOffset"/> 的圆整有可能把指针算到隔壁那一块上去，
+    /// 那就成了「指针旁边那个名字被高亮」——最伤信任的一类错误。
+    /// </remarks>
+    public const double MaxStopJitterRatio = 0.45;
+
+    /// <summary>
     /// 生成 CSGO 开箱的排片表。
     /// </summary>
     /// <param name="names">当前名单。</param>
@@ -39,13 +52,18 @@ internal static class CsgoTrack
     /// 从 0 到 n-1 里挑一个下标的函数，用来给轨道上<b>其他</b>方块摇装饰用的品质。
     /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
     /// </param>
+    /// <param name="stopOffsetSelector">
+    /// 返回一个 0~1 的随机数，用来决定指针停在方块内的哪个位置。
+    /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
+    /// </param>
     /// <returns>排片表；名单不合法或参数病态时返回 <c>null</c>（上层据此不播动画）。</returns>
     public static CsgoPlan? Build(IReadOnlyList<string>? names, string? winner,
         double viewportWidth, double viewportHeight,
         double slotWidth, double slotHeight, double gap, TimeSpan total,
         ItemRarity winnerRarity = ItemRarity.MilSpec,
         IReadOnlyList<double>? rarityWeights = null,
-        Func<int, int>? pickIndexSelector = null)
+        Func<int, int>? pickIndexSelector = null,
+        Func<double>? stopOffsetSelector = null)
     {
         // 喵~防御：名单为空或中选者为空时没什么可滚的，直接作废这段动画。
         if (names is null || names.Count == 0 || string.IsNullOrEmpty(winner))
@@ -115,8 +133,25 @@ internal static class CsgoTrack
         // 其余方块的品质纯粹是滚动过程中闪过去的颜色。
         rarities[winnerTrackIndex] = winnerRarity;
 
-        // 让那一块正好停在视口正中所需的平移量。
-        var targetOffset = OffsetFor(winnerTrackIndex, safeSlotWidth, safeGap, safeViewportWidth);
+        // 指针停在方块内的哪个位置：先摇一个 0~1 的数，再摊成 -1~1 的偏移比例。
+        // 生产环境用操作系统熵源，测试注入固定函数。
+        var roll = stopOffsetSelector?.Invoke()
+                   ?? RandomNumberGenerator.GetInt32(1 << 20) / (double)(1 << 20);
+        // 喵~防御：注入的选择器可能给出 NaN 或越界值，那样算出来的平移量会是 NaN，
+        // 画面整个不见。坏值一律按「停在正中间」处理。
+        if (!double.IsFinite(roll))
+        {
+            roll = 0.5;
+        }
+
+        // 夹到 [0, 1)：乘 2 减 1 之后正好是 [-1, 1) 的偏移比例。
+        roll = Math.Clamp(roll, 0.0, 0.999999);
+
+        // 让那一块停在视口正中所需的平移量，再加上随机偏移——指针因此落在方块内的任意位置，
+        // 而不是每次都压在名字正中。偏移量不超过 MaxStopJitterRatio 个方块宽，
+        // 指针底下因此仍然是中选者那一块（后面还有一道反查断言兜着）。
+        var targetOffset = OffsetFor(winnerTrackIndex, safeSlotWidth, safeGap, safeViewportWidth)
+                           + (roll * 2 - 1) * safeSlotWidth * MaxStopJitterRatio;
         // 轨道末端最多能滚到哪里：再往后滚指针下面就空了。
         var maxOffset = trackLength * pitch - safeViewportWidth;
 
