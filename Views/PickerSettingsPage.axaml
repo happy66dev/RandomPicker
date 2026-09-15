@@ -69,7 +69,7 @@
 
             <controls:SettingsExpander IconSource="{ci:FluentIconSource &#xE768;}"
                                        Header="老虎机每格时长"
-                                       Description="总时长 = 每格时长 × 格数。格数取当前名单里最长名字的字数（2~4 格）。">
+                                       Description="总时长 = 每格时长 × 需要转的格数。格数取当前名单里最长名字的字数（2~4 格）；候选字只剩一种可能的格子不占时间，动画会提前收尾。">
                 <controls:SettingsExpander.Footer>
                     <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                         <Slider Width="160" Minimum="0.2" Maximum="5" TickFrequency="0.1"
