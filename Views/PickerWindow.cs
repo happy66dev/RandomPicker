@@ -188,7 +188,8 @@ public class PickerWindow : Window
     /// <summary>刷新圆钮上的剩余人数。</summary>
     public void RefreshCounter()
     {
-        if (_busy)
+        // 忙碌期间钮上显示的是状态而不是人数，别把它刷掉。
+        if (_busy != PickerBusyKind.None)
         {
             return;
         }
@@ -216,26 +217,37 @@ public class PickerWindow : Window
     }
 
     /// <summary>
-    /// 拍照抽人的忙碌态。
+    /// 悬浮钮的忙碌态。
     /// </summary>
     /// <remarks>
-    /// 开摄像头 + 拍照 + 检测要一两秒，钮上必须有反馈，
+    /// 拍照要开摄像头、跑检测，抽选动画要播好几秒，这两种情况钮上都必须有反馈，
     /// 否则用户会以为没点上而反复戳。
     /// </remarks>
-    public void SetBusy(bool busy)
+    public void SetBusy(PickerBusyKind kind)
     {
-        _busy = busy;
-        if (busy)
+        _busy = kind;
+        switch (kind)
         {
-            _label.Text = "📷";
-            _counter.Text = "拍摄中";
-            return;
-        }
+            case PickerBusyKind.Shooting:
+                // 拍照途中：换成相机图标，说明正在拍。
+                _label.Text = "📷";
+                _counter.Text = "拍摄中";
+                return;
 
-        RefreshCounter();
+            case PickerBusyKind.Animating:
+                // 动画途中：这期间点击会被忽略，钮上要说清楚正在抽。
+                _label.Text = "…";
+                _counter.Text = "抽选中";
+                return;
+
+            default:
+                // 忙完了：把「抽」和剩余人数刷回来（这个时机正好是结果出现的时候）。
+                RefreshCounter();
+                return;
+        }
     }
 
-    private bool _busy;
+    private PickerBusyKind _busy;
 
     #endregion
 
@@ -463,6 +475,9 @@ public class PickerWindow : Window
     private const string SizeGroup = "picker.size";
     private const string HoldGroup = "picker.hold";
 
+    /// <summary>抽选动画样式的单选组名。</summary>
+    private const string AnimGroup = "picker.anim";
+
     /// <summary>
     /// 菜单内容。每次打开都重新构建，勾选状态和剩余人数才是当前的。
     /// </summary>
@@ -516,6 +531,27 @@ public class PickerWindow : Window
                         () => SetSize(PickerSize.Medium)),
                     Choice("大", SizeGroup, _settings.Size == PickerSize.Large,
                         () => SetSize(PickerSize.Large))
+                }
+            },
+            new MenuItem
+            {
+                Header = "抽选动画",
+                ItemsSource = new object[]
+                {
+                    // 五选一：样式本身在设置页里也能改，这里是为了随手切。
+                    Choice("无动画", AnimGroup, _settings.AnimationStyle == RevealAnimationStyle.None,
+                        () => SetAnimation(RevealAnimationStyle.None)),
+                    Choice("滚动名字", AnimGroup, _settings.AnimationStyle == RevealAnimationStyle.Scroll,
+                        () => SetAnimation(RevealAnimationStyle.Scroll)),
+                    Choice("CSGO 开箱", AnimGroup, _settings.AnimationStyle == RevealAnimationStyle.Csgo,
+                        () => SetAnimation(RevealAnimationStyle.Csgo)),
+                    Choice("老虎机", AnimGroup, _settings.AnimationStyle == RevealAnimationStyle.Slot,
+                        () => SetAnimation(RevealAnimationStyle.Slot)),
+                    Choice("拼多多转盘", AnimGroup, _settings.AnimationStyle == RevealAnimationStyle.Wheel,
+                        () => SetAnimation(RevealAnimationStyle.Wheel)),
+                    new Separator(),
+                    // 时长不放在菜单里：菜单只负责随手切样式，调时长去设置页。
+                    Header("时长在「设置 → 随机抽选」里调")
                 }
             },
             new MenuItem
@@ -621,6 +657,14 @@ public class PickerWindow : Window
     private void SetHold(double seconds)
     {
         _settings.RevealSeconds = seconds;
+        SettingsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>切换抽选动画样式。</summary>
+    private void SetAnimation(RevealAnimationStyle style)
+    {
+        _settings.AnimationStyle = style;
+        // 通知宿主服务把设置落盘。
         SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 

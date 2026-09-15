@@ -137,5 +137,14 @@ dotnet test plugins/RandomPicker/tests/RandomPicker.Tests/ClassIsland.RandomPick
 直接对着插件仓库的真实路径运行会因为 `..\..\ClassIsland.Core` 解析不到而失败，
 原因和主项目只能在源码树里编译是同一个。
 
+运行 `dotnet test` / `dotnet build` 时的**当前目录不要落在 ClassIsland 源码树里面**：
+宿主根目录的 `global.json` 要求 .NET SDK 9，而编插件只需要 SDK 8。
+把命令的当前目录放在插件仓库自己这一侧、参数里写联接路径，就能同时满足两条：
+
+```
+cd <插件仓库>                                            # 当前目录在源码树外
+dotnet test <源码树>/plugins/RandomPicker/tests/RandomPicker.Tests/ClassIsland.RandomPicker.Tests.csproj -c Release
+```
+
 相机 I/O、模型真实推理和 Avalonia 界面不在这批测试范围内：它们分别需要真实摄像头、
 原生推理库和显示环境，只能在应用内「设置 → 随机抽选 → 试拍一次」中人工验证。

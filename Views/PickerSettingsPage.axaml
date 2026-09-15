@@ -23,6 +23,81 @@
             </controls:SettingsExpander>
 
             <Separator Margin="0 12 0 4"/>
+            <ci:IconText Glyph="&#xE768;" Text="抽选动画" Margin="0 0 0 4"/>
+
+            <TextBlock Classes="l-instructive" TextWrapping="Wrap"
+                       Text="动画只负责表演：抽中的结果在点击那一刻就已经定好，换任何样式都不改变概率。滚动名字、CSGO 开箱、老虎机、拼多多转盘四种样式也可以在悬浮钮右键菜单里快速切换。"/>
+
+            <controls:SettingsExpander IconSource="{ci:FluentIconSource &#xE768;}"
+                                       Header="动画样式"
+                                       Description="{Binding AnimationSummary}">
+                <controls:SettingsExpander.Footer>
+                    <ComboBox MinWidth="180" ItemsSource="{Binding AnimationStyleNames}"
+                              SelectedIndex="{Binding AnimationStyleIndex, Mode=TwoWay}"/>
+                </controls:SettingsExpander.Footer>
+            </controls:SettingsExpander>
+
+            <controls:SettingsExpander IconSource="{ci:FluentIconSource &#xE768;}"
+                                       Header="滚动名字时长"
+                                       Description="动画播完后才开始算结果停留时间。">
+                <controls:SettingsExpander.Footer>
+                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                        <Slider Width="160" Minimum="0.5" Maximum="20" TickFrequency="0.5"
+                                IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding ScrollDuration, Mode=TwoWay}"
+                                IsEnabled="{Binding IsScrollStyle}"/>
+                        <TextBlock VerticalAlignment="Center" MinWidth="54"
+                                   Text="{Binding ScrollDurationText}"/>
+                    </StackPanel>
+                </controls:SettingsExpander.Footer>
+            </controls:SettingsExpander>
+
+            <controls:SettingsExpander IconSource="{ci:FluentIconSource &#xE768;}"
+                                       Header="CSGO 开箱时长"
+                                       Description="方块滚到指针下面的总时长。">
+                <controls:SettingsExpander.Footer>
+                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                        <Slider Width="160" Minimum="0.5" Maximum="20" TickFrequency="0.5"
+                                IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding CsgoDuration, Mode=TwoWay}"
+                                IsEnabled="{Binding IsCsgoStyle}"/>
+                        <TextBlock VerticalAlignment="Center" MinWidth="54"
+                                   Text="{Binding CsgoDurationText}"/>
+                    </StackPanel>
+                </controls:SettingsExpander.Footer>
+            </controls:SettingsExpander>
+
+            <controls:SettingsExpander IconSource="{ci:FluentIconSource &#xE768;}"
+                                       Header="老虎机每格时长"
+                                       Description="总时长 = 每格时长 × 格数。格数取当前名单里最长名字的字数（2~4 格）。">
+                <controls:SettingsExpander.Footer>
+                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                        <Slider Width="160" Minimum="0.2" Maximum="5" TickFrequency="0.1"
+                                IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding SlotStep, Mode=TwoWay}"
+                                IsEnabled="{Binding IsSlotStyle}"/>
+                        <TextBlock VerticalAlignment="Center" MinWidth="54"
+                                   Text="{Binding SlotStepText}"/>
+                    </StackPanel>
+                </controls:SettingsExpander.Footer>
+            </controls:SettingsExpander>
+
+            <controls:SettingsExpander IconSource="{ci:FluentIconSource &#xE768;}"
+                                       Header="转盘转动时长"
+                                       Description="转到两格边界的时间。滑进中选格的那一下是固定的，不计在这里。">
+                <controls:SettingsExpander.Footer>
+                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                        <Slider Width="160" Minimum="1" Maximum="20" TickFrequency="0.5"
+                                IsSnapToTickEnabled="True" VerticalAlignment="Center"
+                                Value="{Binding WheelDuration, Mode=TwoWay}"
+                                IsEnabled="{Binding IsWheelStyle}"/>
+                        <TextBlock VerticalAlignment="Center" MinWidth="54"
+                                   Text="{Binding WheelDurationText}"/>
+                    </StackPanel>
+                </controls:SettingsExpander.Footer>
+            </controls:SettingsExpander>
+
+            <Separator Margin="0 12 0 4"/>
             <ci:IconText Glyph="&#xE722;" Text="拍照抽人" Margin="0 0 0 4"/>
 
             <TextBlock Classes="l-instructive" TextWrapping="Wrap"

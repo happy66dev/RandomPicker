@@ -64,6 +64,115 @@ public partial class PickerSettingsPage : SettingsPageBase, INotifyPropertyChang
 
     #endregion
 
+    #region 抽选动画
+
+    /// <summary>动画样式下拉框的选项文案。</summary>
+    /// <remarks>顺序必须和 <see cref="RevealAnimationStyle"/> 的枚举值一一对应，改了要两边一起改。</remarks>
+    public List<string> AnimationStyleNames { get; } =
+        ["无动画", "滚动名字", "CSGO 开箱", "老虎机", "拼多多转盘"];
+
+    /// <summary>下拉框当前选中的下标。</summary>
+    public int AnimationStyleIndex
+    {
+        // 枚举值本身就是下标。
+        get => (int)Settings.AnimationStyle;
+        set
+        {
+            // 喵~防御：下拉框理论上不会给出越界下标，但配置被手改坏时可能，直接忽略。
+            if (value < 0 || value > (int)RevealAnimationStyle.Wheel)
+            {
+                return;
+            }
+
+            Settings.AnimationStyle = (RevealAnimationStyle)value;
+            // 存盘并刷新说明文字，以及四个时长滑块各自的可用状态。
+            Save(nameof(AnimationSummary),
+                nameof(IsScrollStyle), nameof(IsCsgoStyle), nameof(IsSlotStyle), nameof(IsWheelStyle));
+        }
+    }
+
+    /// <summary>当前选的是不是滚动名字（决定对应那个时长滑块能不能拖）。</summary>
+    public bool IsScrollStyle => Settings.AnimationStyle == RevealAnimationStyle.Scroll;
+
+    /// <summary>当前选的是不是 CSGO 开箱。</summary>
+    public bool IsCsgoStyle => Settings.AnimationStyle == RevealAnimationStyle.Csgo;
+
+    /// <summary>当前选的是不是老虎机。</summary>
+    public bool IsSlotStyle => Settings.AnimationStyle == RevealAnimationStyle.Slot;
+
+    /// <summary>当前选的是不是转盘。</summary>
+    public bool IsWheelStyle => Settings.AnimationStyle == RevealAnimationStyle.Wheel;
+
+    /// <summary>样式下面那行说明。</summary>
+    public string AnimationSummary => Settings.AnimationStyle switch
+    {
+        RevealAnimationStyle.None => "抽完直接出结果，没有动画。",
+        RevealAnimationStyle.Scroll => "中央大字快速换名字，线性减速后定格。",
+        RevealAnimationStyle.Csgo => "名字方块横向滚过，指针停在中间那一个上。",
+        RevealAnimationStyle.Slot => "逐格抽字，每格从还有可能的字里挑。名单里一旦有超过四个字的名字，会自动改用滚动名字。",
+        RevealAnimationStyle.Wheel => "指针先停在两个名字的缝上，再滑进中选的那一格。",
+        _ => string.Empty
+    };
+
+    /// <summary>滚动名字的时长，单位：秒。</summary>
+    public double ScrollDuration
+    {
+        get => Settings.ScrollDurationSeconds;
+        set
+        {
+            // 保留一位小数，滑块的刻度就是 0.5。
+            Settings.ScrollDurationSeconds = Math.Round(value, 1);
+            Save(nameof(ScrollDurationText));
+        }
+    }
+
+    /// <summary>滚动名字时长的显示文字。</summary>
+    public string ScrollDurationText => $"{Settings.ScrollDurationSeconds:F1} 秒";
+
+    /// <summary>CSGO 开箱的时长，单位：秒。</summary>
+    public double CsgoDuration
+    {
+        get => Settings.CsgoDurationSeconds;
+        set
+        {
+            Settings.CsgoDurationSeconds = Math.Round(value, 1);
+            Save(nameof(CsgoDurationText));
+        }
+    }
+
+    /// <summary>CSGO 开箱时长的显示文字。</summary>
+    public string CsgoDurationText => $"{Settings.CsgoDurationSeconds:F1} 秒";
+
+    /// <summary>老虎机每一格的时长，单位：秒。</summary>
+    public double SlotStep
+    {
+        get => Settings.SlotStepSeconds;
+        set
+        {
+            Settings.SlotStepSeconds = Math.Round(value, 1);
+            Save(nameof(SlotStepText));
+        }
+    }
+
+    /// <summary>老虎机每格时长的显示文字。</summary>
+    public string SlotStepText => $"{Settings.SlotStepSeconds:F1} 秒/格";
+
+    /// <summary>转盘转到边界的时长，单位：秒。</summary>
+    public double WheelDuration
+    {
+        get => Settings.WheelDurationSeconds;
+        set
+        {
+            Settings.WheelDurationSeconds = Math.Round(value, 1);
+            Save(nameof(WheelDurationText));
+        }
+    }
+
+    /// <summary>转盘时长的显示文字。</summary>
+    public string WheelDurationText => $"{Settings.WheelDurationSeconds:F1} 秒";
+
+    #endregion
+
     #region 摄像头
 
     public List<string> CameraNames { get; private set; } = [];

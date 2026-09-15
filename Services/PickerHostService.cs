@@ -150,7 +150,7 @@ public class PickerHostService : IHostedService
         }
 
         _shooting = true;
-        _window?.SetBusy(true);
+        _window?.SetBusy(PickerBusyKind.Shooting);
 
         _ = Task.Run(async () =>
         {
@@ -158,7 +158,7 @@ public class PickerHostService : IHostedService
             Dispatcher.UIThread.Post(() =>
             {
                 _shooting = false;
-                _window?.SetBusy(false);
+                _window?.SetBusy(PickerBusyKind.None);
 
                 if (result is { Success: true, Portrait: not null })
                 {
@@ -210,6 +210,7 @@ public class PickerHostService : IHostedService
             return;
         }
 
+        // 结果在这一刻就抽好了。往后播不播动画、播哪一种，都不会再改变他。
         var name = TextRoster.Pick(_settings);
         SaveSettingsInternal();
         _window?.RefreshCounter();
@@ -221,6 +222,20 @@ public class PickerHostService : IHostedService
             return;
         }
 
+        FinishReveal(name, note);
+    }
+
+    /// <summary>
+    /// 把中选者亮出来：中央大字 + ClassIsland 提醒。
+    /// </summary>
+    /// <param name="name">中选者的名字。</param>
+    /// <param name="note">附带说明，比如从拍照模式退回来的原因。</param>
+    /// <remarks>
+    /// 单独拆成一个方法，是为了让「动画播完之后」和「不播动画直接出结果」这两条路
+    /// 走一模一样的收尾逻辑——免得两边各写一遍，将来改一处忘一处。
+    /// </remarks>
+    private void FinishReveal(string name, string? note)
+    {
         if (_settings.ShowCenterReveal)
         {
             Reveal(name, isHint: false, note);
