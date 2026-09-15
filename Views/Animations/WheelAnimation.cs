@@ -50,6 +50,9 @@ internal sealed class WheelAnimation : RevealAnimationBase
     /// <summary>从缝滑进格子里用多久。</summary>
     private TimeSpan _slideDuration = TimeSpan.FromSeconds(0.35);
 
+    /// <summary>整段动画的总时长，含滑进去之后那段定格。</summary>
+    private TimeSpan _planTotal = TimeSpan.FromSeconds(6.35);
+
     /// <summary>转盘半径。</summary>
     private double _radius;
 
@@ -88,6 +91,7 @@ internal sealed class WheelAnimation : RevealAnimationBase
         _finalAngle = wheel.FinalAngle;
         _holdDuration = wheel.HoldDuration;
         _slideDuration = wheel.SlideDuration;
+        _planTotal = wheel.Total;
 
         // 半径按字号档位换算，保证和插件其它部分同一套视觉尺度。
         _radius = RevealFontSize * 2.2;
@@ -96,13 +100,22 @@ internal sealed class WheelAnimation : RevealAnimationBase
         _stageSize = new Size(side, side);
     }
 
-    /// <inheritdoc/>
-    public override async Task PlayAsync(CancellationToken token)
+
+    /// <summary>
+    /// 按排片表造出这两段动画。抽出来是为了让「定格那段留白真的存在」能被单测验到。
+    /// </summary>
+    /// <remarks>
+    /// 第一段转到缝上，第二段滑进中选格并<b>接着停住</b>：
+    /// 第二段的 <c>Duration</c> 是「总时长 - 第一段」，而它的终点关键帧停在
+    /// <c>_slideDuration</c>（也就是排片表的 <c>MotionTotal</c>），
+    /// 两者之间的差值就是定格——指针停在格子上不动，让人看清停在哪一位。
+    /// </remarks>
+    internal override IReadOnlyList<Animation> BuildAnimations()
     {
-        // 喵~防御：盘面不足两格（装载失败）时直接结束，上层照样会出结果。
+        // 喵~防御：盘面不足两格（装载失败）时一段都不播，上层照样会出结果。
         if (_sectors.Count < 2)
         {
-            return;
+            return [];
         }
 
         // 第一段：空转几圈，减速停在两格之间的缝上。用强减速缓动，停之前有「刹住」的感觉。
@@ -122,12 +135,20 @@ internal sealed class WheelAnimation : RevealAnimationBase
             KeyTime = _holdDuration,
             Setters = { new Setter(AngleProperty, _boundaryAngle) }
         });
-        await spin.RunAsync(this, token);
+
+        // 第二段的长度 = 总时长 - 第一段 = 滑进格子的时间 + 定格。
+        // 喵~防御：排片表被改坏、总时长比第一段还短时，退回「只滑不停」，
+        // 免得时长变成 0 或负数——那样 Avalonia 算 cue 会当场抛异常。
+        var slideLength = _planTotal - _holdDuration;
+        if (slideLength <= TimeSpan.Zero)
+        {
+            slideLength = _slideDuration;
+        }
 
         // 第二段：从缝上挪半格滑进中选那一格。带一点回弹，像被指针「吸」进去。
         var slide = new Animation
         {
-            Duration = _slideDuration,
+            Duration = slideLength,
             FillMode = FillMode.Forward,
             Easing = RevealEasing.Settle
         };
@@ -141,7 +162,8 @@ internal sealed class WheelAnimation : RevealAnimationBase
             KeyTime = _slideDuration,
             Setters = { new Setter(AngleProperty, _finalAngle) }
         });
-        await slide.RunAsync(this, token);
+
+        return [spin, slide];
     }
 
     /// <inheritdoc/>

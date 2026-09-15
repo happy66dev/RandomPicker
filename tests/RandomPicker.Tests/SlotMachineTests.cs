@@ -194,32 +194,52 @@ public sealed class SlotMachineTests
     #region 时长
 
     [Fact]
-    public void Build_TotalIsSpinTimePlusTheSettleHold()
+    public void Build_TotalIsJustTheSpinTime()
     {
-        // 配置里写的是「每格多少秒」，旋转总时长要乘格数；
-        // 另外还要再加一段定格，让最后一格停住之后板面静止一会儿再出结果。
+        // 配置里写的是「每格多少秒」，动作时长就是它乘上<b>要转的格数</b>
+        // （不是总格数——候选字只剩唯一的那些格子不占时间）。
+        // 收尾那段定格也不在这儿加，由 RevealAnimationPlanner 统一给四种样式补上，
+        // 这样四个样式的收尾节奏必然是同一个值，不会漏掉某一个。
         var plan = SlotMachine.Build(["张三", "李小四"], "李小四", Step);
 
         Assert.NotNull(plan);
         Assert.Equal(Step, plan.Step);
-        // 名字最长三个字 → 三格 → 旋转 4.5 秒，再加 0.8 秒定格。
-        Assert.Equal(Step * 3, TimeSpan.FromSeconds(4.5));
-        Assert.Equal(TimeSpan.FromSeconds(4.5 + SlotMachine.SettleSeconds), plan.Total);
+        // 名字最长三个字 → 三格。但中选者姓李，第一格定下「李」之后，
+        // 后面两格只剩「小」「四」两种唯一可能 → 它们不转。
+        Assert.Equal(3, plan.SlotCount);
+        Assert.Equal(1, plan.SpinSlotCount);
+        Assert.Equal(Step, plan.Total);
     }
 
     [Fact]
-    public void Build_TheWinnerLandsBeforeTheAnimationEnds()
+    public void Build_SpinSlotCountStopsAtTheFirstAllDeterminedSlot()
     {
-        // 「最后一格停住」和「动画结束」之间必须有一段差值，那段就是定格。
-        // 没有它的话拼好的名字一帧都留不下——2026-09-15 主人报的就是这个。
-        var plan = SlotMachine.Build(["张三", "李小四"], "李小四", Step);
+        // 两个人的姓不同 → 第一格必须转（候选是「张」「李」）。
+        var firstSlotMatters = SlotMachine.Build(["张三", "李四"], "张三", Step);
+
+        Assert.NotNull(firstSlotMatters);
+        Assert.Equal(1, firstSlotMatters.SpinSlotCount);
+
+        // 四个名字，前三个字就分出胜负时也是同样的道理。
+        // 但这一条要注意：规则是「<b>从某一格起往后全都唯一</b>」才提前收尾，
+        // 不是「某一格自己唯一就不转」。这里最后一格「文/武」有两种可能，
+        // 所以从第一格起就找不到这样的位置，四格都得转。
+        var lastSlotStillOpen = SlotMachine.Build(["欧阳修文", "欧阳修武"], "欧阳修文", Step);
+
+        Assert.NotNull(lastSlotStillOpen);
+        Assert.Equal(4, lastSlotStillOpen.SpinSlotCount);
+    }
+
+    [Fact]
+    public void Build_WhenNoSlotHasASecondPossibility_NothingSpins()
+    {
+        // 名单是「张」和「张三」：第一个字定下「张」之后，后面全是唯一的，
+        // 整段动作时长为 0——看见的是板面直接出现、停一下、出结果。
+        var plan = SlotMachine.Build(["张", "张三"], "张三", Step);
 
         Assert.NotNull(plan);
-        var spinTime = plan.Step * plan.SlotCount;
-        Assert.True(plan.Total > spinTime, "总时长里没有留下定格那段");
-
-        // 差出来的那一段正好是设定值。
-        Assert.Equal(TimeSpan.FromSeconds(SlotMachine.SettleSeconds), plan.Total - spinTime);
+        Assert.Equal(0, plan.SpinSlotCount);
+        Assert.Equal(TimeSpan.Zero, plan.Total);
     }
 
     [Fact]

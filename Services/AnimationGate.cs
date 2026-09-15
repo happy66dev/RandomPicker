@@ -114,9 +114,43 @@ internal static class RevealAnimationPlanner
     /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
     /// </param>
     /// <returns>排片表；数据不满足这个样式的要求时返回 <c>null</c>，由上层降级成不播动画。</returns>
+    /// <remarks>
+    /// <b>定格在这里统一加上去。</b>各样式自己的构建方法只负责算「动作演多久」，
+    /// 这里再给每种样式都补上同一段 <see cref="RevealAnimationPlan.SettleSeconds"/>。
+    /// 集中在一处是为了让四种样式的收尾节奏必然一致——
+    /// 分散到四个地方写，早晚会有一个样式被漏掉（这个 bug 就真发生过两次）。
+    /// </remarks>
     public static RevealAnimationPlan? Build(RevealAnimationStyle style,
         IReadOnlyList<string>? names, string? winner, PickerSettings settings,
         Func<int, int>? pickIndexSelector = null)
+    {
+        var plan = BuildMotion(style, names, winner, settings, pickIndexSelector);
+
+        // 喵~防御：造不出排片表（无动画，或数据不满足这个样式）时原样返回 null。
+        if (plan is null)
+        {
+            return null;
+        }
+
+        // 动作之后接一段定格：画面停住不动，好让人看清结果。
+        return plan with { Total = plan.Total + TimeSpan.FromSeconds(RevealAnimationPlan.SettleSeconds) };
+    }
+
+    /// <summary>
+    /// 生成「动作那一段」的排片表——不含收尾的定格。
+    /// </summary>
+    /// <param name="style">要播的样式。</param>
+    /// <param name="names">当前名单。</param>
+    /// <param name="winner">中选者。</param>
+    /// <param name="settings">插件设置。</param>
+    /// <param name="pickIndexSelector">
+    /// 从 0 到 n-1 里挑一个下标的函数，用来抽帧里显示的名字、装饰用品质、以及转盘扇区。
+    /// 传 <c>null</c> 用操作系统的熵源；测试传固定函数，结果才可断言。
+    /// </param>
+    /// <returns>排片表；数据不满足这个样式的要求时返回 <c>null</c>。</returns>
+    private static RevealAnimationPlan? BuildMotion(RevealAnimationStyle style,
+        IReadOnlyList<string>? names, string? winner, PickerSettings settings,
+        Func<int, int>? pickIndexSelector)
     {
         // 喵~防御：设置对象不允许为 null。
         ArgumentNullException.ThrowIfNull(settings);
@@ -159,7 +193,7 @@ internal static class RevealAnimationPlanner
                 // 这种名单上回退到滚动名字——总比演一个残缺的名字强。
                 if (!SlotMachine.IsUsable(names))
                 {
-                    return Build(RevealAnimationStyle.Scroll, names, winner, settings, pickIndexSelector);
+                    return BuildMotion(RevealAnimationStyle.Scroll, names, winner, settings, pickIndexSelector);
                 }
 
                 // 格数 = 最长名字的字数（夹在 2~4），总时长按格数摊成「每格多少秒」。

@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
+using Avalonia;
 using Avalonia.Animation;
 using Avalonia.Animation.Easings;
 using Avalonia.Headless.XUnit;
@@ -46,42 +48,92 @@ public class AnimationPlaybackTests
     #region 结构：时长和时刻表必须对得上
 
     /// <summary>
-    /// 滚动名字的动画必须带上总时长，且每个关键帧算出来的 cue 都落在 0~1 里。
+    /// 四种样式共同的时间不变量：总时长 = 动作 + 定格，动作在排片表说的那一刻停下，
+    /// 每个关键帧的 cue 都落在 0~1 里。
     /// </summary>
     /// <remarks>
-    /// 这一条直接复现 Avalonia 内部那条换算规则。只要能过，就不会再出现
-    /// 「关键帧全都落在合法区间之外、动画起播即失败」。
+    /// 一次把四种样式都验掉，是因为这几条性质<b>本来就该对每个样式都成立</b>：
+    /// <list type="number">
+    /// <item><c>总时长 - 动作结束时刻 == 定格时长</c>——少了它最后一帧会被结果顶掉；</item>
+    /// <item><c>各段 Duration 之和 == 总时长</c>——转盘是两段，其余是一段；</item>
+    /// <item><c>关键帧的最大时刻 == 动作结束时刻</c>——动作确实在排片表说的那一刻停；</item>
+    /// <item>每个 cue 都在 0~1 里——Avalonia 拿 <c>KeyTime / Duration</c> 当 cue，
+    ///       越界会当场抛异常（某次漏写 <c>Duration</c> 就是这么炸的）；</item>
+    /// <item>每一段的 <c>Duration</c> 都大于零——零会让 cue 变成 <c>0/0</c>。</item>
+    /// </list>
+    /// 分散成四个样式各写一遍的话，早晚漏掉一个——这个 bug 已经漏过两次了。
     /// </remarks>
-    [AvaloniaFact]
-    public void ScrollAnimation_CarriesADurationAndKeepsEveryCueInRange()
+    [AvaloniaTheory]
+    [InlineData(RevealAnimationStyle.Scroll)]
+    [InlineData(RevealAnimationStyle.Csgo)]
+    [InlineData(RevealAnimationStyle.Slot)]
+    [InlineData(RevealAnimationStyle.Wheel)]
+    public void EveryStyle_KeepsTheSameTimingInvariants(RevealAnimationStyle style)
     {
-        // 造一份真实的排片表，从它身上取「应该播多久」。
-        var plan = RevealAnimationPlanner.Build(
-            RevealAnimationStyle.Scroll, Names, "张三", BaseSettings);
-        var scroll = Assert.IsType<ScrollPlan>(plan);
+        // 造一份真实的排片表。
+        var settings = new PickerSettings { AnimationStyle = style };
+        var plan = RevealAnimationPlanner.Build(style, Names, "张三", settings);
+        Assert.NotNull(plan);
 
-        var control = new ScrollNameAnimation(BaseSettings.RevealFontSize, Colors.Cyan);
-        control.Load(scroll);
+        // ① 总时长里确实留了定格，且长度正好是设定值。
+        Assert.True(plan.Total > plan.MotionTotal,
+            $"{style}: 总时长里没有留下定格，最后一帧会被结果顶掉");
+        Assert.Equal(TimeSpan.FromSeconds(RevealAnimationPlan.SettleSeconds),
+            plan.Total - plan.MotionTotal);
 
-        var animation = control.BuildAnimation();
+        // 造控件并装载。
+        var control = CreateControl(style);
+        control.Load(plan);
+        var animations = control.BuildAnimations();
+        Assert.NotEmpty(animations);
 
-        // 喵~防御：时长是零就是那个 bug 本身——Avalonia 会拿它当分母。
-        Assert.True(animation.Duration > TimeSpan.Zero,
-            "动画时长为零，Avalonia 拿它当分母算 cue，动画会在起播瞬间就失败");
-        // 时长必须和排片表声明的那个值一致，否则 cue 会整体偏移。
-        Assert.Equal(scroll.Total, animation.Duration);
-
-        // 每个关键帧的 cue 都要落在 0~1 里，和 Avalonia 的算法同源。
-        Assert.NotEmpty(animation.Children);
-        foreach (var keyFrame in animation.Children)
+        // ② 各段 Duration 之和 == 总时长（转盘两段、其余一段）。
+        var sum = TimeSpan.Zero;
+        foreach (var animation in animations)
         {
-            var cue = CueOf(keyFrame, animation.Duration);
-            Assert.InRange(cue, 0.0, 1.0);
+            // ⑤ 每一段的时长都必须为正——零会让 Avalonia 算出 0/0。
+            Assert.True(animation.Duration > TimeSpan.Zero,
+                $"{style}: 有动画段的时长为零，Avalonia 拿它当分母算 cue，会在起播瞬间失败");
+            sum += animation.Duration;
         }
 
-        // 最后一个关键帧正好落在总时长上，cue 因此是 1——动画的终点就是排片表的终点。
-        Assert.Equal(animation.Duration, animation.Children[animation.Children.Count - 1].KeyTime);
+        Assert.Equal(plan.Total, sum);
+
+        // ③④ 逐段把关键帧换算成「绝对时刻」和 cue，两者都必须在合法范围里。
+        // 多段是**依次**播的，所以后面那段的时刻要加上前面各段的时长。
+        var elapsedBefore = TimeSpan.Zero;
+        var latestKeyTime = TimeSpan.Zero;
+        foreach (var animation in animations)
+        {
+            Assert.NotEmpty(animation.Children);
+            foreach (var keyFrame in animation.Children)
+            {
+                // ④ cue 落在 0~1 里，和 Avalonia 的算法同源。
+                Assert.InRange(CueOf(keyFrame, animation.Duration), 0.0, 1.0);
+                // 关键帧的绝对时刻。
+                var absolute = elapsedBefore + keyFrame.KeyTime;
+                if (absolute > latestKeyTime)
+                {
+                    latestKeyTime = absolute;
+                }
+            }
+
+            elapsedBefore += animation.Duration;
+        }
+
+        // ③ 动作确实在排片表说的那一刻停下，之后到总时长为止都是定格。
+        Assert.Equal(plan.MotionTotal, latestKeyTime);
     }
+
+    /// <summary>按样式造出对应的动画控件。</summary>
+    private static RevealAnimationBase CreateControl(RevealAnimationStyle style) => style switch
+    {
+        RevealAnimationStyle.Csgo => new CsgoAnimation(BaseSettings.RevealFontSize, Colors.Cyan),
+        RevealAnimationStyle.Slot => new SlotMachineAnimation(BaseSettings.RevealFontSize, Colors.Cyan),
+        RevealAnimationStyle.Wheel => new WheelAnimation(BaseSettings.RevealFontSize, Colors.Cyan),
+        // 剩下的（含 Scroll）都用滚动名字。
+        _ => new ScrollNameAnimation(BaseSettings.RevealFontSize, Colors.Cyan)
+    };
 
     /// <summary>
     /// 不给 <c>Duration</c> 的动画，算出来的 cue 一定越界，<c>Cue</c> 会抛异常。
@@ -119,47 +171,149 @@ public class AnimationPlaybackTests
     }
 
     /// <summary>
-    /// 老虎机最后一格必须<b>提前</b>停住，后面留一段静止的定格。
+    /// 老虎机：最后一格必须在「动作结束时刻」停住，不算最后一个重播的候选字。
     /// </summary>
     /// <remarks>
     /// <b>这条是为 2026-09-15「老虎机最后的抽取有问题，应该最后一个字展示一会会再继续」建的。</b>
     /// 当时的排片表把总时长定成「每格 × 格数」，最后一格恰好在总时长那一刻才停住，
     /// 动画当场结束就切去出结果，拼好的名字一帧都留不下。
-    /// <para/>
-    /// 断言分两层：排片表那一层验总时长里确实多出一段定格；
-    /// 动画那一层验最后一个关键帧落在总时长<b>之前</b>——那截差值就是留白本身。
+    /// 现在定格由 <see cref="RevealAnimationPlan"/> 统一提供，这条专门盯着老虎机那一段的落点。
     /// </remarks>
     [AvaloniaFact]
-    public void SlotAnimation_HoldsTheFinishedBoardBeforeTheAnimationEnds()
+    public void SlotAnimation_LandsTheLastSpinSlotOnTheMotionEnd()
     {
         var settings = new PickerSettings { AnimationStyle = RevealAnimationStyle.Slot, SlotStepSeconds = 1.5 };
         var plan = RevealAnimationPlanner.Build(RevealAnimationStyle.Slot, Names, "张三", settings);
         var slot = Assert.IsType<SlotPlan>(plan);
 
-        // 排片表这一层：总时长 = 每格 × 格数 + 定格。
-        var spinTime = slot.Step * slot.SlotCount;
-        Assert.True(slot.Total > spinTime, "排片表的总时长里没有留下定格那段");
-        Assert.Equal(spinTime + TimeSpan.FromSeconds(SlotMachine.SettleSeconds), slot.Total);
+        // 排片表这一层：动作时长 = 每格 × 要转的格数。
+        Assert.Equal(slot.Step * slot.SpinSlotCount, slot.MotionTotal);
 
-        // 动画这一层：最后一个关键帧落在总时长之前，差值就是留白。
+        // 动画这一层：关键帧的最大时刻就是动作结束时刻，落到它为止都在转，之后才是定格。
         var control = new SlotMachineAnimation(BaseSettings.RevealFontSize, Colors.Cyan);
         control.Load(slot);
-        var animation = control.BuildAnimation();
+        var animations = control.BuildAnimations();
+        var animation = Assert.Single(animations);
 
-        Assert.Equal(slot.Total, animation.Duration);
-        Assert.NotEmpty(animation.Children);
-
-        var lastLanding = animation.Children[animation.Children.Count - 1].KeyTime;
-        Assert.True(lastLanding < animation.Duration,
-            $"最后一格停在 {lastLanding}，而动画总长 {animation.Duration}——没有留白，名字一帧都留不下");
-        // 留白的长度正好是设定值，不多不少。
-        Assert.Equal(TimeSpan.FromSeconds(SlotMachine.SettleSeconds), animation.Duration - lastLanding);
-
-        // 关键帧的 cue 依然都落在 0~1 里（Duration 漏写会在这里炸开）。
+        var latest = TimeSpan.Zero;
         foreach (var keyFrame in animation.Children)
         {
-            Assert.InRange(CueOf(keyFrame, animation.Duration), 0.0, 1.0);
+            if (keyFrame.KeyTime > latest)
+            {
+                latest = keyFrame.KeyTime;
+            }
         }
+
+        // 最后一格的落点正好是动作结束时刻——不能早（会少转一会儿），也不能晚（会把定格吃掉）。
+        Assert.Equal(slot.MotionTotal, latest);
+    }
+
+    /// <summary>
+    /// 老虎机：候选字只剩唯一的那几格不转，动画直接把它们亮出来。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是为 2026-09-15「老虎机最后候选已经只有唯一，是直接展示结果并且结束动画」建的。</b>
+    /// 名单里所有名字都同姓时，第一格就已经只剩一个候选字，再转也只是同一个字一直闪——
+    /// 那段时间白等，还会让人以为画面卡住了。
+    /// </remarks>
+    [Fact]
+    public void SlotMachine_StopsSpinningOnceEveryRemainingSlotIsTheOnlyPossibility()
+    {
+        // 「张三、李四」：第一格有「张」「李」两种可能，得转；
+        // 但中选者姓张，第一格定下之后第二格只剩「三」，没有第二种可能了。
+        // 于是只有第一格要转，后面那格直接亮出来，动画比原来早一步收尾。
+        var twoNames = SlotMachine.Build(["张三", "李四"], "张三", TimeSpan.FromSeconds(1));
+
+        Assert.NotNull(twoNames);
+        Assert.Equal(2, twoNames.SlotCount);
+        Assert.Equal(1, twoNames.SpinSlotCount);
+        // 动作时长 = 每格 × 要转的格数，而不是 × 总格数。
+        Assert.Equal(TimeSpan.FromSeconds(1), twoNames.Total);
+
+        // 连第一格都没得抽时（名单里有「张」又有「张三」）：整段动作时长为 0，
+        // 看见的是「板面直接出现、停一下、出结果」。
+        var nothingToSpin = SlotMachine.Build(["张", "张三"], "张三", TimeSpan.FromSeconds(1));
+
+        Assert.NotNull(nothingToSpin);
+        Assert.Equal(0, nothingToSpin.SpinSlotCount);
+        Assert.Equal(TimeSpan.Zero, nothingToSpin.Total);
+
+        // 反例：最后一格还有两种可能时，一格都不能省——「提前收尾」要求的是
+        // 「从某一格起往后全都唯一」，不是「某一格自己唯一」。
+        var lastSlotOpen = SlotMachine.Build(["张三", "张四"], "张三", TimeSpan.FromSeconds(1));
+
+        Assert.NotNull(lastSlotOpen);
+        Assert.Equal(2, lastSlotOpen.SpinSlotCount);
+    }
+
+    /// <summary>
+    /// 老虎机：候选只剩唯一的那几格，必须等到别格停稳的那一刻才亮，不能一开场就显示。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条防的是剧透。</b>名单「张三、李四」抽中张三时，第一格有「张」「李」两种可能（要转），
+    /// 但第一格一旦定下「张」，第二格就只剩「三」。要是第二格一开场就把「三」摆出来，
+    /// 第一格还在滚的时候答案就已经漏了——「抽」的过程也就没意义了。
+    /// </remarks>
+    [AvaloniaFact]
+    public void SlotAnimation_KeepsTheOnlyPossibilitySlotsHiddenUntilTheSpinStops()
+    {
+        // 走真实的那条路造排片表（planner 会补上定格），别手搓——手搓的没有定格那一段，
+        // MotionTotal 就不是「动作结束时刻」了。
+        var settings = new PickerSettings { AnimationStyle = RevealAnimationStyle.Slot, SlotStepSeconds = 1 };
+        var plan = RevealAnimationPlanner.Build(RevealAnimationStyle.Slot, ["张三", "李四"], "张三", settings);
+        var slot = Assert.IsType<SlotPlan>(plan);
+        // 第一格要转，第二格只剩唯一。
+        Assert.Equal(1, slot.SpinSlotCount);
+
+        var control = new SlotMachineAnimation(BaseSettings.RevealFontSize, Colors.Cyan);
+        control.Load(slot);
+        var animation = Assert.Single(control.BuildAnimations());
+
+        // 第二格（唯一候选的那一格）：先空着，到动作结束才亮。
+        var secondSlot = FramesOf(animation, SlotMachineAnimation.Slot1ProgressProperty);
+
+        Assert.NotEmpty(secondSlot);
+        // 最早的画面必须是空的（进度 0），而且不能落在时刻 0 上——那等于开场就亮。
+        Assert.Equal(0.0, secondSlot[0].Value);
+        Assert.True(secondSlot[0].Time > TimeSpan.Zero,
+            "唯一候选的那格在开场就亮了，答案会提前泄露");
+        // 亮出来的时刻正好是动作结束时刻，和前面那格停稳是同一瞬间。
+        Assert.Equal(1.0, secondSlot[^1].Value);
+        Assert.Equal(slot.MotionTotal, secondSlot[^1].Time);
+
+        // 对照：真正要转的第一格是从时刻 0 就开始的。
+        var firstSlot = FramesOf(animation, SlotMachineAnimation.Slot0ProgressProperty);
+
+        Assert.NotEmpty(firstSlot);
+        Assert.Equal(TimeSpan.Zero, firstSlot[0].Time);
+        Assert.Equal(0.0, firstSlot[0].Value);
+        Assert.Equal(slot.MotionTotal, firstSlot[^1].Time);
+        Assert.Equal(1.0, firstSlot[^1].Value);
+    }
+
+    /// <summary>挑出某个属性上的所有关键帧，按原顺序返回「时刻 + 值」。</summary>
+    /// <remarks>
+    /// 关键帧里装的是 <c>IAnimationSetter</c>，它的 <c>Property</c>/<c>Value</c> 在插件这一侧不可访问
+    /// （接口成员不是 public），所以要落到具体的 <see cref="Setter"/> 上再读。
+    /// 喵~防御：值不是 double 的（类型写错）直接跳过，不硬转。
+    /// </remarks>
+    private static (TimeSpan Time, double Value)[] FramesOf(Animation animation, AvaloniaProperty property)
+    {
+        var frames = new List<(TimeSpan Time, double Value)>();
+        foreach (var keyFrame in animation.Children)
+        {
+            foreach (var setter in keyFrame.Setters)
+            {
+                if (setter is Setter concrete
+                    && concrete.Property == property
+                    && concrete.Value is double value)
+                {
+                    frames.Add((keyFrame.KeyTime, value));
+                }
+            }
+        }
+
+        return [.. frames];
     }
 
     /// <summary>按 Avalonia 的算法，把一个关键帧换算成 cue。</summary>

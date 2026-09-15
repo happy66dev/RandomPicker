@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -53,14 +54,42 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
     /// <summary>当前实际用了几格（2~4）。</summary>
     private int _slotCount;
 
-    /// <summary>每一格转多久，单位：秒。装载时从排片表抄下来。</summary>
-    private double _stepSeconds = 1.5;
+    /// <summary>
+    /// 每一格转多久。用它（而不是先化成秒数）去算关键帧时刻，
+    /// 才能保证「最后一格的落点」和排片表给的 <c>MotionTotal</c> <b>一模一样</b>——
+    /// 差一个 tick 都会让 cue 越过 1，Avalonia 的 Cue 构造函数会当场抛异常。
+    /// </summary>
+    private TimeSpan _slotStep = TimeSpan.FromSeconds(1.5);
+
+    /// <summary>
+    /// 真正要转的格子数，从第 0 格数起。
+    /// </summary>
+    /// <remarks>
+    /// 后面那些格子的候选字已经只剩唯一一种可能，再转也只是演戏——
+    /// 它们不占时间（排片表的 <c>SpinSlotCount</c>）。
+    /// </remarks>
+    private int _spinSlotCount;
+
+    /// <summary>
+    /// 唯一候选那几格「一起亮出来」用多久。
+    /// </summary>
+    /// <remarks>
+    /// 它们不等前面转完就亮会剧透：比如名单「张三、李四、王五」抽中张三，
+    /// 第二格只剩「三」，一开场就显示的话，第一格还在转答案就漏了。
+    /// 所以它们在<b>真正在转的格全部停稳的那一刻</b>才出现，这里留一小段淡入，
+    /// 免得「啪」地跳出来。
+    /// </remarks>
+    private static readonly TimeSpan RevealRamp = TimeSpan.FromMilliseconds(140);
 
     /// <summary>
     /// 整段动画的总时长，含最后一格停住之后那段定格。装载时从排片表抄下来。
     /// </summary>
-    /// <remarks>它<b>大于</b>「每格时长 × 格数」，多出来的那一截就是让主人看清名字的留白。</remarks>
+    /// <remarks>它<b>大于</b>「每格时长 × 要转的格数」，多出来的那一截就是让主人看清名字的留白。</remarks>
     private TimeSpan _planTotal = TimeSpan.FromSeconds(1.5 * 2);
+
+    /// <summary>动作结束时刻：最后一格停住的那一瞬间。唯一候选的那几格在这一刻才亮出来。</summary>
+    /// <remarks>从自己的排片数据算（每格 × 要转的格数），不依赖「总时长里含不含定格」。</remarks>
+    private TimeSpan _motionEnd;
 
     /// <summary>一个格子的宽度。</summary>
     private double _cellWidth;
@@ -128,9 +157,15 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
         // 格数夹在 2~4：排片表本来就该给出这个范围，这里再兜一道。
         _slotCount = Math.Clamp(slot.SlotCount, SlotMachine.MinSlots, SlotMachine.MaxSlots);
 
-        // 喵~防御：单格时长不是正数时总时长会变成 0，动画一闪而过什么也看不见。
-        // 兜底成 1 秒，至少让用户看清板面。
-        _stepSeconds = slot.Step.TotalSeconds > 0 ? slot.Step.TotalSeconds : 1;
+        // 喵~防御：单格时长不是正数时动画会一闪而过什么也看不见，兜底成 1 秒。
+        // 用 TimeSpan 版的步长算关键帧时刻，和排片表的乘法是同一个，结果必定对齐。
+        _slotStep = slot.Step > TimeSpan.Zero ? slot.Step : TimeSpan.FromSeconds(1);
+
+        // 要转几格：后面那些候选字只剩唯一的格子不占时间，等前几格停稳了才亮出来。
+        _spinSlotCount = Math.Clamp(slot.SpinSlotCount, 0, _slotCount);
+
+        // 动作结束时刻 = 每格时长 × 要转的格数。
+        _motionEnd = _slotStep * _spinSlotCount;
 
         // 总时长照抄排片表：它已经含了定格那一段，最后一格的落点因此提前于它。
         _planTotal = slot.Total;
@@ -158,32 +193,25 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
             _cellHeight + RevealFontSize * 0.3);
     }
 
-    /// <inheritdoc/>
-    public override async Task PlayAsync(CancellationToken token)
-    {
-        // 喵~防御：一格都没有（装载失败）时直接结束，上层照样会出结果。
-        if (_slotCount <= 0)
-        {
-            return;
-        }
-
-        await BuildAnimation().RunAsync(this, token);
-    }
 
     /// <summary>
     /// 按排片表造出这段动画。抽出来是为了让「定格那段留白真的存在」能被单测验到。
     /// </summary>
     /// <remarks>
     /// <b>最后一格的落点是 <c>总时长 - 定格时长</c>，后面那一截留白就是定格。</b>
-    /// 排片表的 <see cref="SlotPlan.Total"/> 已经含了 <see cref="SlotMachine.SettleSeconds"/>，
+    /// 排片表的 <see cref="SlotPlan.Total"/> 已经含了 <see cref="RevealAnimationPlan.SettleSeconds"/>，
     /// 而这里所有关键帧都落在「总时长 - 定格」之前，于是 Avalonia 在最后一个关键帧之后
     /// 保持终值不动（<c>FillMode.Forward</c> 会把最后一帧的值延续到结尾）——
     /// 板面就这样静止着让主人看清拼出来的名字。
     /// <para/>
+    /// <b>候选字只剩唯一的那几格不转</b>：它们只有一个值可以取，转起来也是同一个字一直闪，
+    /// 等于白等。这些格子在时刻 0 就被置成终值——板面一上来就是对的。
+    /// 从第一格起全是唯一时，整段动作时长为 0，看见的是「板面直接出现、停一下、出结果」。
+    /// <para/>
     /// 要是哪次改动把这些关键帧推到了结尾，留白就没了，
     /// 「最后一个字展示一会会再继续」这条需求会静默失效，所以有测试盯着它。
     /// </remarks>
-    internal Animation BuildAnimation()
+    internal override IReadOnlyList<Animation> BuildAnimations()
     {
         // 直线推每一格的进度；「先快后慢」的效果放在 Render 里做，
         // 这样时间轴本身保持简单——每格占的时间窗一眼就能看出来。
@@ -199,21 +227,84 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
         {
             // 这一格对应的进度属性。
             var property = SlotProgressProperty(i);
+
+            // 候选字只剩唯一（或者中选者比格数短、这格留空）：不转。
+            if (i >= _spinSlotCount)
+            {
+                AddRevealKeyFrames(animation, property);
+                continue;
+            }
+
             // 还没轮到这一格时钉在 0 上——板面上应该是个没字的空格子。
             animation.Children.Add(new KeyFrame
             {
-                KeyTime = TimeSpan.FromSeconds(_stepSeconds * i),
+                KeyTime = _slotStep * i,
                 Setters = { new Setter(property, 0.0) }
             });
             // 轮到这一格：在它自己的时间窗里从 0 走到 1。
+            // 最后一格的落点因此正好是「每格 × 要转的格数」，也就是排片表的 MotionTotal。
             animation.Children.Add(new KeyFrame
             {
-                KeyTime = TimeSpan.FromSeconds(_stepSeconds * (i + 1)),
+                KeyTime = _slotStep * (i + 1),
                 Setters = { new Setter(property, 1.0) }
             });
         }
 
-        return animation;
+        return [animation];
+    }
+
+    /// <summary>
+    /// 给「候选只剩唯一」的格子加关键帧：它们<b>不在开头</b>就亮，而是在别格停稳的那一刻一起出现。
+    /// </summary>
+    /// <param name="animation">要往里加关键帧的动画。</param>
+    /// <param name="property">这一格的进度属性。</param>
+    /// <remarks>
+    /// 之所以不放在开头：名单「张三、李四、王五」抽中张三时，第二格只剩「三」，
+    /// 一开场就显示的话第一格还在转、答案就已经漏了。放在最后则是「中选者是谁最后一刻才齐」，
+    /// 保住了「抽」的感觉。
+    /// <para/>
+    /// 起止时刻都取自动作结束时刻（<c>MotionTotal</c>），所以「关键帧的最大时刻 == 动作结束时刻」
+    /// 这条不变量依然成立。
+    /// </remarks>
+    private void AddRevealKeyFrames(Animation animation, AvaloniaProperty<double> property)
+    {
+        // 动作结束时刻就是从自己这份排片数据算出来的「每格 × 要转的格数」。
+        // 不写成「总时长 - 定格时长」是有原因的：定格是 RevealAnimationPlanner 统一加上去的，
+        // 直接构造的排片表（测试，或将来别处复用）没有那一段，减出来就对不上，
+        // 这几格会亮在「前面还在转」的时刻上。
+        var motionEnd = _motionEnd;
+
+        // 喵~防御：整段动作时长为 0（一格都不用转）时没有「停稳那一刻」，
+        // 板面本来就该直接出现，于是只给一个终值关键帧。
+        if (motionEnd <= TimeSpan.Zero)
+        {
+            animation.Children.Add(new KeyFrame
+            {
+                KeyTime = TimeSpan.Zero,
+                Setters = { new Setter(property, 1.0) }
+            });
+            return;
+        }
+
+        // 淡入的起点。喵~防御：动作比淡入还短时从 0 开始，免得关键帧时刻变成负数。
+        var rampStart = motionEnd - RevealRamp;
+        if (rampStart < TimeSpan.Zero)
+        {
+            rampStart = TimeSpan.Zero;
+        }
+
+        // 之前一直空着。
+        animation.Children.Add(new KeyFrame
+        {
+            KeyTime = rampStart,
+            Setters = { new Setter(property, 0.0) }
+        });
+        // 到这一刻和前面停稳的格子一起亮出来。
+        animation.Children.Add(new KeyFrame
+        {
+            KeyTime = motionEnd,
+            Setters = { new Setter(property, 1.0) }
+        });
     }
 
     /// <inheritdoc/>

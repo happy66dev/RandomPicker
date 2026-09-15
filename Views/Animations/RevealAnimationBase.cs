@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
+using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Styling;
@@ -56,8 +58,32 @@ internal abstract class RevealAnimationBase : Control
     /// <summary>装载排片表。必须在 <see cref="PlayAsync"/> 之前调用。</summary>
     public abstract void Load(RevealAnimationPlan plan);
 
-    /// <summary>播放这段动画。被取消时抛 <see cref="OperationCanceledException"/>。</summary>
-    public abstract Task PlayAsync(CancellationToken token);
+    /// <summary>
+    /// 按排片表造出这段动画要播的一个或几个 <see cref="Animation"/>，<b>按播放顺序</b>排好。
+    /// </summary>
+    /// <remarks>
+    /// 大多样式只有一个；转盘是两个（先转到缝上、再滑进格子）。
+    /// 装载失败或数据不满足这个样式时返回空集合——上层照样会走「出结果」的收尾。
+    /// <para/>
+    /// 单独抽出来而不是直接写在播放里，是为了让「时长和时刻表对不对得上」能被单测验到：
+    /// 缺 <c>Duration</c>、关键帧越过总时长这些毛病，都只能在造出来的这个对象上验。
+    /// </remarks>
+    internal abstract IReadOnlyList<Animation> BuildAnimations();
+
+    /// <summary>
+    /// 播放这段动画。被取消时抛 <see cref="OperationCanceledException"/>。
+    /// </summary>
+    /// <remarks>
+    /// 多段必须<b>依次</b>播完再放下一个，不能一起起播——转盘那两段写的是同一个角度属性，
+    /// 同时跑会互相盖掉，看起来就是「转到一半突然跳过去」。
+    /// </remarks>
+    public async Task PlayAsync(CancellationToken token)
+    {
+        foreach (var animation in BuildAnimations())
+        {
+            await animation.RunAsync(this, token);
+        }
+    }
 
     /// <summary>把进度硬置到终点。</summary>
     /// <remarks>

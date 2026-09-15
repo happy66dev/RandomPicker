@@ -16,7 +16,7 @@ namespace ClassIsland.RandomPicker.Views.Animations;
 /// </summary>
 /// <remarks>
 /// 驱动属性是 <see cref="Progress"/>，单位是<b>帧号</b>而不是 0~1 的比例。
-/// 排片表给出的换帧时刻是等差递增的，两条关键帧之间线性插值，
+/// 排片表给出的换帧间隔是<b>等比增长</b>的（越换越慢），两条关键帧之间线性插值，
 /// 所以 <c>floor(Progress)</c> 天然就是「现在停在第一帧」，
 /// 小数部分则是「正从这一帧滚到下一帧、滚了多少」。
 /// <para/>
@@ -43,8 +43,11 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
     /// <summary>一行文字占多高。滚动时上下两行就是这个间距。</summary>
     private double _lineHeight;
 
-    /// <summary>这一段动画的总时长。既是 <c>Animation.Duration</c>，也是末帧的关键帧时刻。</summary>
+    /// <summary>这一段动画的总时长。既是 <c>Animation.Duration</c>，也就是排片表里的 Total。</summary>
     private TimeSpan _planTotal;
+
+    /// <summary>动作停下的时刻。末帧落在这儿，之后到总时长为止是定格。</summary>
+    private TimeSpan _motionTotal;
 
     /// <summary>算好的舞台尺寸。</summary>
     private Size _stageSize;
@@ -75,14 +78,16 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
             _frames = [];
             _intervals = [];
             _planTotal = TimeSpan.Zero;
+            _motionTotal = TimeSpan.Zero;
             _stageSize = default;
             return;
         }
 
         _frames = scroll.Frames;
         _intervals = scroll.Intervals;
-        // 总时长照抄排片表：关键帧时刻就是按它算出来的，两者必须同源。
+        // 总时长照抄排片表；动作在「总时长 - 定格」那一刻就停了，末帧落在那里。
         _planTotal = scroll.Total;
+        _motionTotal = scroll.MotionTotal;
         _lineHeight = RevealFontSize * 1.35;
 
         // 舞台宽度要放得下最长的那一帧，不然换到长名字时会被裁掉。
@@ -103,18 +108,6 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
         _stageSize = new Size(stageWidth, _lineHeight * 2);
     }
 
-    /// <inheritdoc/>
-    public override async Task PlayAsync(CancellationToken token)
-    {
-        // 喵~防御：没有可播的帧（装载失败或名单为空）时直接结束，
-        // 上层照样会走「出结果」的收尾，不会因为动画缺席而丢结果。
-        if (_frames.Count == 0 || _intervals.Count != _frames.Count)
-        {
-            return;
-        }
-
-        await BuildAnimation().RunAsync(this, token);
-    }
 
     /// <summary>
     /// 按排片表造出这段动画。抽出来是为了让「时长和时刻表对不对得上」能被单测验到。
@@ -128,13 +121,16 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
     /// 当场抛「This cue object's value should be within or equal to 0.0 and 1.0」。
     /// 那个异常会被上层「绝不吞掉结果」的兜底接住，表现是<b>结果照出、动画全无、还不报错</b>——
     /// 2026-09-15 主人报的「动画并没有触发」就是这个。
+    /// <para/>
+    /// 时长取排片表的总时长（含定格），而末帧落在 <c>MotionTotal</c> 上，
+    /// 两者之间那一截就是定格：中选者的名字停住不动，让人看清。
     /// </remarks>
-    internal Animation BuildAnimation()
+    internal override IReadOnlyList<Animation> BuildAnimations()
     {
         // 帧间线性插值，减速效果全部由「间隔越来越长」来表达。
         var animation = new Animation
         {
-            // 总时长取排片表声明的那个值：它和末帧的时刻相等，末帧的 cue 才正好是 1。
+            // 总时长取排片表声明的那个值：它和末帧落在的时刻同源，末帧的 cue 才落在 0~1 里。
             Duration = _planTotal,
             FillMode = FillMode.Forward,
             Easing = new LinearEasing()
@@ -153,10 +149,11 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
             // 第 i 帧停留的时长；坏值当 0 处理，总和仍然等于排片表给的总时长。
             var seconds = double.IsFinite(_intervals[i]) && _intervals[i] > 0 ? _intervals[i] : 0;
             elapsed += TimeSpan.FromSeconds(seconds);
-            // 末帧钉死在总时长上。逐项 TimeSpan.FromSeconds 每次都会取整到 tick，
-            // 240 项攒下来能差出几微秒，末帧的 cue 就成了 0.9999996 而不是 1——
-            // 动画会比配置短一丁点，「计划里写的时长」和「实际播的时长」就对不上了。
-            var at = i == _frames.Count - 1 ? _planTotal : elapsed;
+            // 末帧钉死在「动作结束时刻」上。两个理由：
+            // 一是逐项 TimeSpan.FromSeconds 每次都会取整到 tick，240 项攒下来能差出几微秒，
+            // 不钉的话末帧的 cue 会是 0.9999996 而不是 1；
+            // 二是末帧之后到总时长为止要留出定格，落在总时长上就没有定格了。
+            var at = i == _frames.Count - 1 ? _motionTotal : elapsed;
             // 关键帧落在这个时刻，值就是帧号 i。
             animation.Children.Add(new KeyFrame
             {
@@ -165,7 +162,7 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
             });
         }
 
-        return animation;
+        return [animation];
     }
 
     /// <inheritdoc/>

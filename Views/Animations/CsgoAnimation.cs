@@ -55,6 +55,9 @@ internal sealed class CsgoAnimation : RevealAnimationBase
     /// <summary>这段动画的总时长，装载时从排片表抄下来。</summary>
     private TimeSpan _planTotal = TimeSpan.FromSeconds(4);
 
+    /// <summary>动作停下的时刻。滚到这里的瞬间就定格了，之后到总时长为止是静止。</summary>
+    private TimeSpan _motionTotal = TimeSpan.FromSeconds(3.2);
+
     /// <summary>算好的舞台尺寸，等于排片表给的可视区大小。</summary>
     private Size _stageSize;
 
@@ -92,20 +95,26 @@ internal sealed class CsgoAnimation : RevealAnimationBase
         _slotHeight = csgo.SlotHeight;
         _gap = csgo.Gap;
         _targetOffset = csgo.TargetOffset;
+        // 总时长含定格，动作在「总时长 - 定格」那一刻就停了。
         _planTotal = csgo.Total;
+        _motionTotal = csgo.MotionTotal;
         // 可视区多大，舞台就多大——平移量本来就是按这个宽度算出来的，两者必须一致。
         _stageSize = new Size(csgo.ViewportWidth, csgo.ViewportHeight);
     }
 
-    /// <inheritdoc/>
-    public override async Task PlayAsync(CancellationToken token)
-    {
-        // 喵~防御：轨道是空的（装载失败）时直接结束，上层照样会出结果。
-        if (_track.Count == 0)
-        {
-            return;
-        }
 
+    /// <summary>
+    /// 按排片表造出这段动画。抽出来是为了让「时长和时刻表对不对得上」能被单测验到。
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="Animation.Duration"/> 必须写</b>：Avalonia 拿它当分母把 <c>KeyTime</c>
+    /// 换算成 cue，漏了会算出 <c>0/0</c> 并当场抛异常（见 <see cref="ScrollNameAnimation.BuildAnimations"/> 的说明）。
+    /// <para/>
+    /// 终点落在 <c>_motionTotal</c> 而不是总时长上：两者之间那一截就是定格——
+    /// 方块停在指针下、高亮着不动，让人看清开出来的是什么。
+    /// </remarks>
+    internal override IReadOnlyList<Animation> BuildAnimations()
+    {
         // 从静止开始，一路加速冲过去再减速停住。
         var animation = new Animation
         {
@@ -122,14 +131,14 @@ internal sealed class CsgoAnimation : RevealAnimationBase
             Setters = { new Setter(OffsetProperty, 0.0) }
         });
 
-        // 终点：中选者那一块正好压在指针下面。
+        // 终点：中选者那一块正好压在指针下面。落点在动作结束时刻，之后留着定格。
         animation.Children.Add(new KeyFrame
         {
-            KeyTime = _planTotal,
+            KeyTime = _motionTotal,
             Setters = { new Setter(OffsetProperty, _targetOffset) }
         });
 
-        await animation.RunAsync(this, token);
+        return [animation];
     }
 
     /// <inheritdoc/>
@@ -159,6 +168,26 @@ internal sealed class CsgoAnimation : RevealAnimationBase
         var slotTop = (height - _slotHeight) / 2;
         // 指针（固定在正中央）底下是第几块。几何判定完全交给 CsgoTrack，和排片表同源。
         var centerIndex = CsgoTrack.IndexAtOffset(offset, _slotWidth, _gap, width);
+
+        // 指针下那一块要显示哪个品质。停稳之后才是中选者真正摇出来的那个，
+        // 之前是轨道上那一份装饰值——和方块用的是同一条规则，绝不提前剧透。
+        // 喵~防御：rarities 理论上和 track 一样长，长度对不上时（计划被改坏）
+        // 退回最常见那一档，而不是越界。
+        var centerRarity = centerIndex >= 0 && centerIndex < _rarities.Count
+            ? _rarities[centerIndex]
+            : ItemRarity.MilSpec;
+        var revealedRarity = settled ? _winnerRarity : centerRarity;
+
+        // 整块背景也跟着品质走：还没停稳时用指针下那一块的装饰品质，方块滚过去时底色一路换色；
+        // 停稳之后换成中选者真正的品质并加深——「开出来了」这件事整个画面都在说。
+        // 底色本身压得比方块暗，方块才立得起来。
+        var backdropBase = Color.FromRgb(0x14, 0x14, 0x1A);
+        var backdropTint = settled ? 0.46 : 0.20;
+        context.DrawRectangle(
+            new SolidColorBrush(RarityColors.Mix(backdropBase, RarityColors.ColorOf(revealedRarity), backdropTint)),
+            null,
+            new Rect(0, 0, width, height),
+            height * 0.09, height * 0.09);
 
         for (var i = 0; i < _track.Count; i++)
         {
@@ -190,7 +219,8 @@ internal sealed class CsgoAnimation : RevealAnimationBase
             var rarityColor = RarityColors.ColorOf(rarity);
 
             // 底色：暗底往品质色上偏一点。停稳的中选块偏得最多，像被点亮了。
-            var tint = revealed ? 0.30 : 0.10;
+            // 底色比方块后面那层背景再亮一档，方块才从背景里浮出来。
+            var tint = revealed ? 0.34 : 0.14;
             var background = new SolidColorBrush(
                 RarityColors.Mix(Color.FromRgb(0x22, 0x22, 0x2A), rarityColor, tint));
             // 描边用品质色：停稳后实心描边，滚动中只是浅浅一层。

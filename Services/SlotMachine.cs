@@ -28,19 +28,6 @@ internal static class SlotMachine
     /// <summary>最多格数。超出的字显示不出来，所以这个样式对四字以上的名字不可用。</summary>
     public const int MaxSlots = 4;
 
-    /// <summary>
-    /// 最后一格停住之后，板面再静止多久，单位：秒。
-    /// </summary>
-    /// <remarks>
-    /// <b>这段时间是必需的，不是装饰。</b>没有它的话最后一格恰好在「总时长」那一刻才停住，
-    /// 动画当场结束、立刻切去出结果，拼好的名字一帧都留不下——
-    /// 2026-09-15 主人报的「老虎机最后的抽取有问题，应该最后一个字展示一会会再继续」就是这个。
-    /// <para/>
-    /// 它算在动画时长里面（<see cref="Build"/> 会把它加进 <c>Total</c>），
-    /// 所以「停留 X 秒」依旧只管动画结束之后，不会被它影响。
-    /// </remarks>
-    public const double SettleSeconds = 0.8;
-
     /// <summary>名单里最长名字有几个字。名单为空时返回 0。</summary>
     public static int LongestNameLength(IReadOnlyList<string>? names)
     {
@@ -79,9 +66,9 @@ internal static class SlotMachine
     /// <param name="step">每一格转多久。</param>
     /// <returns>排片表；名单或中选者不合法时返回 <c>null</c>（上层据此不播动画）。</returns>
     /// <remarks>
-    /// 排片表里的 <c>Total</c> = 每格时长 × 格数 <b>再加上</b> <see cref="SettleSeconds"/> 那段定格。
-    /// 也就是说最后一格在 <c>Total - SettleSeconds</c> 那一刻就停住了，
-    /// 剩下的时间是让主人看清拼出来的名字的。
+    /// 这里给出的 <c>Total</c> 是<b>动作时长</b>「每格时长 × 格数」——
+    /// 最后一格就是在这个时刻停住的。之后还会有一段定格（<c>RevealAnimationPlan.SettleSeconds</c>），
+    /// 由 <c>RevealAnimationPlanner</c> 统一加上去，四种样式一视同仁。
     /// </remarks>
     public static SlotPlan? Build(IReadOnlyList<string>? names, string? winner, TimeSpan step)
     {
@@ -140,7 +127,70 @@ internal static class SlotMachine
             }
         }
 
-        return new SlotPlan(slotCount, candidates, winnerChars,
-            safeStep, safeStep * slotCount + TimeSpan.FromSeconds(SettleSeconds), winner);
+        // 真正要转几格：从第一格起找「从这里往后全是唯一候选」的位置。
+        var spinSlotCount = CountSpinningSlots(slotCount, candidates, winnerChars);
+
+        return new SlotPlan(slotCount, candidates, winnerChars, spinSlotCount,
+            safeStep, safeStep * spinSlotCount, winner);
+    }
+
+    /// <summary>
+    /// 数出真正需要旋转的格子数。
+    /// </summary>
+    /// <param name="slotCount">总格数。</param>
+    /// <param name="candidates">每一格的候选字集合。</param>
+    /// <param name="winnerChars">中选者每一格的字；<c>null</c> 表示留空。</param>
+    /// <returns>要转的格子数，从第 0 格数起。</returns>
+    /// <remarks>
+    /// <b>规则：从某一格起，如果往后每一格都「没有第二种可能」，那这些格子就不该占用时间。</b>
+    /// 名单里所有名字都同姓时，第一格就已经只剩一个候选字，再转也只是演戏——
+    /// 干脆让动画直接跳到把板面亮完（返回 0），板面出现、停一下、出结果。
+    /// <para/>
+    /// 「没有第二种可能」的两种形态：候选集合只有一个字，或者这一格本来就留空
+    /// （中选者比格数短，那格画的是空框，没有可抽的东西）。
+    /// </remarks>
+    private static int CountSpinningSlots(int slotCount, string[] candidates, char?[] winnerChars)
+    {
+        for (var slot = 0; slot < slotCount; slot++)
+        {
+            // 从这一格起往后全都不用转了 → 就是它。
+            if (AllDeterminedFrom(slot, slotCount, candidates, winnerChars))
+            {
+                return slot;
+            }
+        }
+
+        // 每一格都还有别的可能，那就全转。
+        return slotCount;
+    }
+
+    /// <summary>从指定的一格开始，往后每一格是不是都已经「没有第二种可能」。</summary>
+    private static bool AllDeterminedFrom(int from, int slotCount, string[] candidates, char?[] winnerChars)
+    {
+        for (var slot = from; slot < slotCount; slot++)
+        {
+            if (!IsDetermined(slot, candidates, winnerChars))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>这一格是不是已经「没有第二种可能」——转也转不出别的字。</summary>
+    private static bool IsDetermined(int slot, string[] candidates, char?[] winnerChars)
+    {
+        // 中选者比格数短留下的空格子：本来就没东西可抽，算作已定。
+        if (winnerChars[slot] is null)
+        {
+            return true;
+        }
+
+        // 候选字只剩中选者那一个字：转起来也是它一直闪，等于没转。
+        // 喵~防御：候选集合为空（名单里没有这么长的名字）时也算已定——
+        // 那种格子画出来是空的，没有可抽的东西。
+        return candidates[slot].Length <= 1
+               && (candidates[slot].Length == 0 || candidates[slot][0] == winnerChars[slot]!.Value);
     }
 }
