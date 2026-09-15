@@ -200,6 +200,75 @@ public sealed class PickerSettingsTests : IDisposable
 
     #endregion
 
+    #region 抽选动画
+
+    [Fact]
+    public void Defaults_AnimationStyleIsNone()
+    {
+        // 默认不播动画：升级上来的用户不该被突然动画到。
+        Assert.Equal(RevealAnimationStyle.None, new PickerSettings().AnimationStyle);
+    }
+
+    [Fact]
+    public void Defaults_AnimationDurationsMatchSpec()
+    {
+        // 四个默认时长：滚动名字 4 秒、CSGO 4 秒、老虎机每格 1.5 秒、转盘 6 秒。
+        var settings = new PickerSettings();
+
+        Assert.Equal(4.0, settings.ScrollDurationSeconds);
+        Assert.Equal(4.0, settings.CsgoDurationSeconds);
+        Assert.Equal(1.5, settings.SlotStepSeconds);
+        Assert.Equal(6.0, settings.WheelDurationSeconds);
+    }
+
+    [Fact]
+    public void SaveAndLoad_RoundTripsAnimationSettings()
+    {
+        // 改一遍所有动画设置，存盘再读回来，一个都不能丢。
+        var original = new PickerSettings
+        {
+            AnimationStyle = RevealAnimationStyle.Wheel,
+            ScrollDurationSeconds = 2.5,
+            CsgoDurationSeconds = 3.5,
+            SlotStepSeconds = 2.0,
+            WheelDurationSeconds = 8.0
+        };
+
+        original.Save(_settingsPath);
+        var loaded = PickerSettings.Load(_settingsPath);
+
+        Assert.Equal(RevealAnimationStyle.Wheel, loaded.AnimationStyle);
+        Assert.Equal(2.5, loaded.ScrollDurationSeconds);
+        Assert.Equal(3.5, loaded.CsgoDurationSeconds);
+        Assert.Equal(2.0, loaded.SlotStepSeconds);
+        Assert.Equal(8.0, loaded.WheelDurationSeconds);
+    }
+
+    [Fact]
+    public void Save_WritesAnimationStyleAsReadableText()
+    {
+        // 枚举要写成人能看懂的名字而不是数字，配置文件才是给人手改的。
+        new PickerSettings { AnimationStyle = RevealAnimationStyle.Slot }.Save(_settingsPath);
+
+        var json = File.ReadAllText(_settingsPath, Encoding.UTF8);
+        Assert.Contains("Slot", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Load_WithUnknownAnimationStyle_FallsBackToDefaults()
+    {
+        // 配置里写了一个不存在的样式名时，不能因为一个字段把整个插件拦住。
+        File.WriteAllText(_settingsPath,
+            "{ \"AnimationStyle\": \"不存在的样式\" }", new UTF8Encoding(false));
+
+        var settings = PickerSettings.Load(_settingsPath);
+
+        // 整份配置退回默认值（这是 Load 既有的容错行为）。
+        Assert.Equal(RevealAnimationStyle.None, settings.AnimationStyle);
+    }
+
+    #endregion
+
     #region 由尺寸档位推导的显示参数
 
     [Fact]

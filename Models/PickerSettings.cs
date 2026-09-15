@@ -37,6 +37,31 @@ public enum PickerSize
 }
 
 /// <summary>
+/// 抽选动画样式。
+/// </summary>
+/// <remarks>
+/// 动画只是「表演」：抽中的结果在点击的那一刻就已经定好了，
+/// 所以换任何样式都不会改变抽中概率，也不会影响「本轮已抽」的记账。
+/// </remarks>
+public enum RevealAnimationStyle
+{
+    /// <summary>不播动画：抽完直接出结果（一直以来的行为，也是默认值）。</summary>
+    None,
+
+    /// <summary>中央大字原地快速换名字，线性减速，最后定格在中选者上。</summary>
+    Scroll,
+
+    /// <summary>一排名字方块横向滚过，指针停在中间那一个上面，像 CSGO 开箱。</summary>
+    Csgo,
+
+    /// <summary>若干格子逐格抽字，一个字一个字地定下来，像老虎机。</summary>
+    Slot,
+
+    /// <summary>转盘转到两个扇区的边界上，再滑进中选的那一格，像拼多多的现金转盘。</summary>
+    Wheel
+}
+
+/// <summary>
 /// 插件设置。存在插件配置目录下的 <c>settings.json</c>。
 /// </summary>
 public class PickerSettings
@@ -75,6 +100,30 @@ public class PickerSettings
 
     /// <summary>上一次抽到的人，用于「随机抽选」模式回避连抽同一个。</summary>
     public string? LastPicked { get; set; }
+
+    #region 抽选动画
+
+    /// <summary>抽选动画样式。</summary>
+    /// <remarks>
+    /// <b>默认不播动画</b>，免得升级之后突然被动画到。
+    /// 换成任何样式都不影响公平性——结果在点击那一刻就抽好了，动画只负责演。
+    /// </remarks>
+    public RevealAnimationStyle AnimationStyle { get; set; } = RevealAnimationStyle.None;
+
+    /// <summary>「滚动名字」样式的动画时长，单位：秒。</summary>
+    public double ScrollDurationSeconds { get; set; } = 4.0;
+
+    /// <summary>「CSGO 开箱」样式的动画时长，单位：秒。</summary>
+    public double CsgoDurationSeconds { get; set; } = 4.0;
+
+    /// <summary>「老虎机」样式每一格的时长，单位：秒。总时长 = 这个值 × 格数。</summary>
+    public double SlotStepSeconds { get; set; } = 1.5;
+
+    /// <summary>「转盘」样式转到边界所用的时长，单位：秒。</summary>
+    /// <remarks>滑进扇区的那一下是固定 0.35 秒，不计在这个值里面。</remarks>
+    public double WheelDurationSeconds { get; set; } = 6.0;
+
+    #endregion
 
     #region 拍照抽人
 

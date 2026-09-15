@@ -1,0 +1,199 @@
+using System;
+using System.Collections.Generic;
+using ClassIsland.RandomPicker.Models;
+
+namespace ClassIsland.RandomPicker.Services;
+
+/// <summary>
+/// 动画开关与时长：决定「这次到底播不播」以及「播多久」。
+/// </summary>
+/// <remarks>
+/// 两件事：一是尊重 ClassIsland 自己的动画设置（用户在宿主里关掉动画时插件必须跟着安静），
+/// 二是把配置里的秒数夹到合理区间，免得手改出来的 0、负数或 NaN 把动画变成永远播不完。
+/// </remarks>
+internal static class AnimationGate
+{
+    /// <summary>
+    /// 按宿主的动画开关把用户选的样式降级。
+    /// </summary>
+    /// <param name="requested">用户在插件里选的样式。</param>
+    /// <param name="animationLevel">宿主的动画等级：0 = 关、1 = 基础、2 = 全部。</param>
+    /// <param name="transientDisabled">宿主持否处于「临时禁用动画」状态。</param>
+    /// <returns>实际该播的样式；该安静时返回 <see cref="RevealAnimationStyle.None"/>。</returns>
+    /// <remarks>
+    /// <b>判据是「等级 &gt;= 1」，不是「&gt;= 2」。</b>
+    /// 宿主的默认动画等级就是 1（<c>ClassIsland/Models/Settings.cs</c> 里初始化为 1），
+    /// 写成 <c>&gt;= 2</c> 会让默认安装下动画永远不播——而且在开发机上把等级调到 2 试的时候
+    /// 完全看不出问题。宿主自己用 <c>&gt;= 1</c> 的先例见 <c>DrawerHost.axaml.cs</c>。
+    /// </remarks>
+    public static RevealAnimationStyle Resolve(RevealAnimationStyle requested,
+        int animationLevel, bool transientDisabled)
+    {
+        // 用户自己在插件里选了「无动画」，那就没什么可商量了。
+        if (requested == RevealAnimationStyle.None)
+        {
+            return RevealAnimationStyle.None;
+        }
+
+        // 宿主关掉了动画，或者正在临时禁用动画：插件跟着安静，直接出结果。
+        if (transientDisabled || animationLevel < 1)
+        {
+            return RevealAnimationStyle.None;
+        }
+
+        // 其余情况照用户选的播。
+        return requested;
+    }
+
+    /// <summary>
+    /// 这段动画实际要播多久。
+    /// </summary>
+    /// <param name="style">动画样式。</param>
+    /// <param name="settings">插件设置，提供各样式自己的时长。</param>
+    /// <param name="slotCount">老虎机的格数；其他样式忽略这个参数。</param>
+    public static TimeSpan DurationOf(RevealAnimationStyle style, PickerSettings settings, int slotCount = 0)
+    {
+        // 喵~防御：设置对象不该为 null，早报错好定位。
+        ArgumentNullException.ThrowIfNull(settings);
+
+        switch (style)
+        {
+            case RevealAnimationStyle.Scroll:
+                // 滚动名字：0.5 秒到 20 秒之间。
+                return TimeSpan.FromSeconds(ClampSeconds(settings.ScrollDurationSeconds, 0.5, 20));
+
+            case RevealAnimationStyle.Csgo:
+                // CSGO 开箱：同样 0.5 秒到 20 秒。
+                return TimeSpan.FromSeconds(ClampSeconds(settings.CsgoDurationSeconds, 0.5, 20));
+
+            case RevealAnimationStyle.Slot:
+            {
+                // 格数兜底成下限：调用方还没算出格数时，也得给一个像样的总时长。
+                var slots = Math.Clamp(slotCount <= 0 ? SlotMachine.MinSlots : slotCount,
+                    SlotMachine.MinSlots, SlotMachine.MaxSlots);
+                // 单格 0.2 秒到 10 秒，总时长 = 单格 × 格数。
+                return TimeSpan.FromSeconds(ClampSeconds(settings.SlotStepSeconds, 0.2, 10) * slots);
+            }
+
+            case RevealAnimationStyle.Wheel:
+                // 转盘：转到边界用 1 到 20 秒，再加上固定不变的「滑进扇区」那一下。
+                return TimeSpan.FromSeconds(ClampSeconds(settings.WheelDurationSeconds, 1.0, 20))
+                       + WheelLayout.SlideDuration;
+
+            default:
+                // 无动画或未知样式：零时长，调用方会走「直接出结果」的分支。
+                return TimeSpan.Zero;
+        }
+    }
+
+    /// <summary>把配置里的秒数夹到合理区间，并挡掉 NaN / Infinity。</summary>
+    private static double ClampSeconds(double seconds, double minimum, double maximum)
+    {
+        // 喵~防御：配置被手改成 NaN 或 Infinity 时，Math.Clamp 会原样把它们放过去，
+        // 时长就成了 NaN，动画永远结束不了（连「停留 X 秒」都跟着失效）。
+        // 这种情况下退回下限——宁可快放，也不能把界面卡住。
+        if (!double.IsFinite(seconds))
+        {
+            return minimum;
+        }
+
+        return Math.Clamp(seconds, minimum, maximum);
+    }
+}
+
+/// <summary>
+/// 把「样式 + 名单 + 中选者」翻译成具体的排片表。
+/// </summary>
+/// <remarks>
+/// 单独拆出来是为了让这段映射本身也能被单测覆盖：动画控件只负责把计划画出来，
+/// 「该用哪张计划」这件事在这里决定。
+/// </remarks>
+internal static class RevealAnimationPlanner
+{
+    /// <summary>方块高度的倍率（相对中央大字的字号）。</summary>
+    private const double SlotHeightRatio = 1.15;
+
+    /// <summary>方块宽度的倍率。</summary>
+    private const double SlotWidthRatio = 1.5;
+
+    /// <summary>方块间距的倍率。</summary>
+    private const double GapRatio = 0.12;
+
+    /// <summary>CSGO 可视区宽度的倍率（大概能同时看到四块半）。</summary>
+    private const double ViewportWidthRatio = 4.6;
+
+    /// <summary>CSGO 可视区高度的倍率。</summary>
+    private const double ViewportHeightRatio = 1.6;
+
+    /// <summary>
+    /// 生成排片表。
+    /// </summary>
+    /// <param name="style">要播的样式。</param>
+    /// <param name="names">当前名单。</param>
+    /// <param name="winner">中选者。</param>
+    /// <param name="settings">插件设置。</param>
+    /// <returns>排片表；数据不满足这个样式的要求时返回 <c>null</c>，由上层降级成不播动画。</returns>
+    public static RevealAnimationPlan? Build(RevealAnimationStyle style,
+        IReadOnlyList<string>? names, string? winner, PickerSettings settings)
+    {
+        // 喵~防御：设置对象不允许为 null。
+        ArgumentNullException.ThrowIfNull(settings);
+
+        // 名单为空或没有中选者时，任何样式都无从演起。
+        if (names is null || names.Count == 0 || string.IsNullOrEmpty(winner))
+        {
+            return null;
+        }
+
+        switch (style)
+        {
+            case RevealAnimationStyle.Scroll:
+            {
+                // 滚动名字：只要名单里有中选者就能播。
+                var duration = AnimationGate.DurationOf(style, settings);
+                return ScrollTicks.BuildPlan(names, winner, duration.TotalSeconds);
+            }
+
+            case RevealAnimationStyle.Csgo:
+            {
+                // 方块尺寸跟着中央大字的字号档位走，保证和插件其它部分同一套视觉尺度。
+                var slotHeight = settings.RevealFontSize * SlotHeightRatio;
+                var slotWidth = settings.RevealFontSize * SlotWidthRatio;
+                var gap = settings.RevealFontSize * GapRatio;
+                var viewportWidth = settings.RevealFontSize * ViewportWidthRatio;
+                var viewportHeight = slotHeight * ViewportHeightRatio;
+                var duration = AnimationGate.DurationOf(style, settings);
+                return CsgoTrack.Build(names, winner,
+                    viewportWidth, viewportHeight, slotWidth, slotHeight, gap, duration);
+            }
+
+            case RevealAnimationStyle.Slot:
+            {
+                // 老虎机对名字长度有硬要求：超过 4 个字就显示不完整。
+                // 这种名单上回退到滚动名字——总比演一个残缺的名字强。
+                if (!SlotMachine.IsUsable(names))
+                {
+                    return Build(RevealAnimationStyle.Scroll, names, winner, settings);
+                }
+
+                // 格数 = 最长名字的字数（夹在 2~4），总时长按格数摊成「每格多少秒」。
+                var slots = Math.Clamp(SlotMachine.LongestNameLength(names),
+                    SlotMachine.MinSlots, SlotMachine.MaxSlots);
+                var duration = AnimationGate.DurationOf(style, settings, slots);
+                var step = TimeSpan.FromSeconds(duration.TotalSeconds / slots);
+                return SlotMachine.Build(names, winner, step);
+            }
+
+            case RevealAnimationStyle.Wheel:
+            {
+                // 「滑进扇区」那一下是固定的，配置里的时长只管转到边界那一段。
+                var duration = AnimationGate.DurationOf(style, settings) - WheelLayout.SlideDuration;
+                return WheelLayout.Build(names, winner, duration);
+            }
+
+            default:
+                // 无动画（或将来新增了样式但这里忘了处理）：交给上层直接出结果。
+                return null;
+        }
+    }
+}
