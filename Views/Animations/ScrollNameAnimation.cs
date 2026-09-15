@@ -43,6 +43,9 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
     /// <summary>一行文字占多高。滚动时上下两行就是这个间距。</summary>
     private double _lineHeight;
 
+    /// <summary>这一段动画的总时长。既是 <c>Animation.Duration</c>，也是末帧的关键帧时刻。</summary>
+    private TimeSpan _planTotal;
+
     /// <summary>算好的舞台尺寸。</summary>
     private Size _stageSize;
 
@@ -71,12 +74,15 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
         {
             _frames = [];
             _intervals = [];
+            _planTotal = TimeSpan.Zero;
             _stageSize = default;
             return;
         }
 
         _frames = scroll.Frames;
         _intervals = scroll.Intervals;
+        // 总时长照抄排片表：关键帧时刻就是按它算出来的，两者必须同源。
+        _planTotal = scroll.Total;
         _lineHeight = RevealFontSize * 1.35;
 
         // 舞台宽度要放得下最长的那一帧，不然换到长名字时会被裁掉。
@@ -107,9 +113,29 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
             return;
         }
 
+        await BuildAnimation().RunAsync(this, token);
+    }
+
+    /// <summary>
+    /// 按排片表造出这段动画。抽出来是为了让「时长和时刻表对不对得上」能被单测验到。
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="Animation.Duration"/> 必须写，漏了整段动画直接不播。</b>
+    /// Avalonia 用它当分母把每个关键帧的 <c>KeyTime</c> 换算成 cue
+    /// （<c>Animation.cs</c> 里 <c>cue = KeyTime.TotalSeconds / Duration.TotalSeconds</c>）。
+    /// 默认值是 <see cref="TimeSpan.Zero"/>，于是第一个关键帧算出 <c>0/0 = NaN</c>，
+    /// 而 <c>Cue</c> 的构造函数只接受 0~1、NaN 两个比较都不成立，
+    /// 当场抛「This cue object's value should be within or equal to 0.0 and 1.0」。
+    /// 那个异常会被上层「绝不吞掉结果」的兜底接住，表现是<b>结果照出、动画全无、还不报错</b>——
+    /// 2026-09-15 主人报的「动画并没有触发」就是这个。
+    /// </remarks>
+    internal Animation BuildAnimation()
+    {
         // 帧间线性插值，减速效果全部由「间隔越来越长」来表达。
         var animation = new Animation
         {
+            // 总时长取排片表声明的那个值：它和末帧的时刻相等，末帧的 cue 才正好是 1。
+            Duration = _planTotal,
             FillMode = FillMode.Forward,
             Easing = new LinearEasing()
         };
@@ -127,15 +153,19 @@ internal sealed class ScrollNameAnimation : RevealAnimationBase
             // 第 i 帧停留的时长；坏值当 0 处理，总和仍然等于排片表给的总时长。
             var seconds = double.IsFinite(_intervals[i]) && _intervals[i] > 0 ? _intervals[i] : 0;
             elapsed += TimeSpan.FromSeconds(seconds);
+            // 末帧钉死在总时长上。逐项 TimeSpan.FromSeconds 每次都会取整到 tick，
+            // 240 项攒下来能差出几微秒，末帧的 cue 就成了 0.9999996 而不是 1——
+            // 动画会比配置短一丁点，「计划里写的时长」和「实际播的时长」就对不上了。
+            var at = i == _frames.Count - 1 ? _planTotal : elapsed;
             // 关键帧落在这个时刻，值就是帧号 i。
             animation.Children.Add(new KeyFrame
             {
-                KeyTime = elapsed,
+                KeyTime = at,
                 Setters = { new Setter(ProgressProperty, (double)i) }
             });
         }
 
-        await animation.RunAsync(this, token);
+        return animation;
     }
 
     /// <inheritdoc/>
