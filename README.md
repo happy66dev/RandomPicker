@@ -104,3 +104,38 @@
 - 仓库：<https://github.com/Gordonynh/RandomPicker>　·　MIT 协议
 - 针对 ClassIsland 2.1（Avalonia）构建；随 release 提供打包好的 `.cipx`
 - 从源码编译：克隆到 ClassIsland 源码树的 `plugins/` 目录下，`dotnet build -c Release`
+
+## 开发
+
+### 编译环境
+
+插件工程里的 `ProjectReference` 写的是 `..\..\ClassIsland.Core\ClassIsland.Core.csproj`，
+所以源码必须放在 ClassIsland 源码树的 `plugins/` 目录下才能编译。不想复制一份的话，
+Windows 上可以建一个目录联接，源码仍然留在自己的仓库里：
+
+```
+mklink /J ClassIsland\plugins\RandomPicker <插件仓库路径>
+```
+
+- 插件本体是 net8.0，用 .NET SDK 8 就能编。
+- 宿主 ClassIsland 仓库的 `global.json` 要求 .NET SDK 9 及以上，编宿主时需要另装。
+- 插件引用的 `Microsoft.Windows.SDK.NET` / `WinRT.Runtime` 来自
+  `microsoft.windows.sdk.net.ref` 这个 NuGet 包。它是框架引用包（`DotnetPlatform` 类型），
+  不能写成 `PackageReference`，只能用 `PackageDownload` 拉取。本机缓存里没有它时，
+  编译会报「未能解析此引用：Microsoft.Windows.SDK.NET」。
+
+### 测试
+
+```
+dotnet test plugins/RandomPicker/tests/RandomPicker.Tests/ClassIsland.RandomPicker.Tests.csproj -c Release
+```
+
+测试工程在 `tests/RandomPicker.Tests`，xUnit，覆盖名单解析与三种抽选模式、设置读写与损坏配置、
+人脸几何计算与边界、回避状态、人脸框去重。
+
+**测试必须从源码树这一侧发起编译**（用上面那条 `plugins/...` 路径，或用目录联接的路径）。
+直接对着插件仓库的真实路径运行会因为 `..\..\ClassIsland.Core` 解析不到而失败，
+原因和主项目只能在源码树里编译是同一个。
+
+相机 I/O、模型真实推理和 Avalonia 界面不在这批测试范围内：它们分别需要真实摄像头、
+原生推理库和显示环境，只能在应用内「设置 → 随机抽选 → 试拍一次」中人工验证。
