@@ -56,6 +56,12 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
     /// <summary>每一格转多久，单位：秒。装载时从排片表抄下来。</summary>
     private double _stepSeconds = 1.5;
 
+    /// <summary>
+    /// 整段动画的总时长，含最后一格停住之后那段定格。装载时从排片表抄下来。
+    /// </summary>
+    /// <remarks>它<b>大于</b>「每格时长 × 格数」，多出来的那一截就是让主人看清名字的留白。</remarks>
+    private TimeSpan _planTotal = TimeSpan.FromSeconds(1.5 * 2);
+
     /// <summary>一个格子的宽度。</summary>
     private double _cellWidth;
 
@@ -114,6 +120,7 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
         if (plan is not SlotPlan slot)
         {
             _slotCount = 0;
+            _planTotal = TimeSpan.Zero;
             _stageSize = default;
             return;
         }
@@ -124,6 +131,9 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
         // 喵~防御：单格时长不是正数时总时长会变成 0，动画一闪而过什么也看不见。
         // 兜底成 1 秒，至少让用户看清板面。
         _stepSeconds = slot.Step.TotalSeconds > 0 ? slot.Step.TotalSeconds : 1;
+
+        // 总时长照抄排片表：它已经含了定格那一段，最后一格的落点因此提前于它。
+        _planTotal = slot.Total;
 
         _spinSequences = new char[_slotCount][];
         for (var i = 0; i < _slotCount; i++)
@@ -157,14 +167,30 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
             return;
         }
 
-        // 总时长：排片表给的每格时长 × 格数。
-        var total = TimeSpan.FromSeconds(_stepSeconds * _slotCount);
+        await BuildAnimation().RunAsync(this, token);
+    }
 
+    /// <summary>
+    /// 按排片表造出这段动画。抽出来是为了让「定格那段留白真的存在」能被单测验到。
+    /// </summary>
+    /// <remarks>
+    /// <b>最后一格的落点是 <c>总时长 - 定格时长</c>，后面那一截留白就是定格。</b>
+    /// 排片表的 <see cref="SlotPlan.Total"/> 已经含了 <see cref="SlotMachine.SettleSeconds"/>，
+    /// 而这里所有关键帧都落在「总时长 - 定格」之前，于是 Avalonia 在最后一个关键帧之后
+    /// 保持终值不动（<c>FillMode.Forward</c> 会把最后一帧的值延续到结尾）——
+    /// 板面就这样静止着让主人看清拼出来的名字。
+    /// <para/>
+    /// 要是哪次改动把这些关键帧推到了结尾，留白就没了，
+    /// 「最后一个字展示一会会再继续」这条需求会静默失效，所以有测试盯着它。
+    /// </remarks>
+    internal Animation BuildAnimation()
+    {
         // 直线推每一格的进度；「先快后慢」的效果放在 Render 里做，
         // 这样时间轴本身保持简单——每格占的时间窗一眼就能看出来。
         var animation = new Animation
         {
-            Duration = total,
+            // 总时长含定格那段，所以最后一格的落点会提前于它。
+            Duration = _planTotal,
             FillMode = FillMode.Forward,
             Easing = new LinearEasing()
         };
@@ -187,7 +213,7 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
             });
         }
 
-        await animation.RunAsync(this, token);
+        return animation;
     }
 
     /// <inheritdoc/>

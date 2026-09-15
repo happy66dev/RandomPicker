@@ -194,14 +194,32 @@ public sealed class SlotMachineTests
     #region 时长
 
     [Fact]
-    public void Build_TotalIsStepTimesSlotCount()
+    public void Build_TotalIsSpinTimePlusTheSettleHold()
     {
-        // 配置里写的是「每格多少秒」，总时长要乘格数。
+        // 配置里写的是「每格多少秒」，旋转总时长要乘格数；
+        // 另外还要再加一段定格，让最后一格停住之后板面静止一会儿再出结果。
         var plan = SlotMachine.Build(["张三", "李小四"], "李小四", Step);
 
         Assert.NotNull(plan);
         Assert.Equal(Step, plan.Step);
-        Assert.Equal(TimeSpan.FromSeconds(4.5), plan.Total);
+        // 名字最长三个字 → 三格 → 旋转 4.5 秒，再加 0.8 秒定格。
+        Assert.Equal(Step * 3, TimeSpan.FromSeconds(4.5));
+        Assert.Equal(TimeSpan.FromSeconds(4.5 + SlotMachine.SettleSeconds), plan.Total);
+    }
+
+    [Fact]
+    public void Build_TheWinnerLandsBeforeTheAnimationEnds()
+    {
+        // 「最后一格停住」和「动画结束」之间必须有一段差值，那段就是定格。
+        // 没有它的话拼好的名字一帧都留不下——2026-09-15 主人报的就是这个。
+        var plan = SlotMachine.Build(["张三", "李小四"], "李小四", Step);
+
+        Assert.NotNull(plan);
+        var spinTime = plan.Step * plan.SlotCount;
+        Assert.True(plan.Total > spinTime, "总时长里没有留下定格那段");
+
+        // 差出来的那一段正好是设定值。
+        Assert.Equal(TimeSpan.FromSeconds(SlotMachine.SettleSeconds), plan.Total - spinTime);
     }
 
     [Fact]

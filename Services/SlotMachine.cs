@@ -28,6 +28,19 @@ internal static class SlotMachine
     /// <summary>最多格数。超出的字显示不出来，所以这个样式对四字以上的名字不可用。</summary>
     public const int MaxSlots = 4;
 
+    /// <summary>
+    /// 最后一格停住之后，板面再静止多久，单位：秒。
+    /// </summary>
+    /// <remarks>
+    /// <b>这段时间是必需的，不是装饰。</b>没有它的话最后一格恰好在「总时长」那一刻才停住，
+    /// 动画当场结束、立刻切去出结果，拼好的名字一帧都留不下——
+    /// 2026-09-15 主人报的「老虎机最后的抽取有问题，应该最后一个字展示一会会再继续」就是这个。
+    /// <para/>
+    /// 它算在动画时长里面（<see cref="Build"/> 会把它加进 <c>Total</c>），
+    /// 所以「停留 X 秒」依旧只管动画结束之后，不会被它影响。
+    /// </remarks>
+    public const double SettleSeconds = 0.8;
+
     /// <summary>名单里最长名字有几个字。名单为空时返回 0。</summary>
     public static int LongestNameLength(IReadOnlyList<string>? names)
     {
@@ -65,6 +78,11 @@ internal static class SlotMachine
     /// <param name="winner">中选者。</param>
     /// <param name="step">每一格转多久。</param>
     /// <returns>排片表；名单或中选者不合法时返回 <c>null</c>（上层据此不播动画）。</returns>
+    /// <remarks>
+    /// 排片表里的 <c>Total</c> = 每格时长 × 格数 <b>再加上</b> <see cref="SettleSeconds"/> 那段定格。
+    /// 也就是说最后一格在 <c>Total - SettleSeconds</c> 那一刻就停住了，
+    /// 剩下的时间是让主人看清拼出来的名字的。
+    /// </remarks>
     public static SlotPlan? Build(IReadOnlyList<string>? names, string? winner, TimeSpan step)
     {
         // 喵~防御：名单为空或没有中选者时没什么可演的。
@@ -123,6 +141,6 @@ internal static class SlotMachine
         }
 
         return new SlotPlan(slotCount, candidates, winnerChars,
-            safeStep, safeStep * slotCount, winner);
+            safeStep, safeStep * slotCount + TimeSpan.FromSeconds(SettleSeconds), winner);
     }
 }

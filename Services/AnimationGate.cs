@@ -46,7 +46,9 @@ internal static class AnimationGate
                 // 格数兜底成下限：调用方还没算出格数时，也得给一个像样的总时长。
                 var slots = Math.Clamp(slotCount <= 0 ? SlotMachine.MinSlots : slotCount,
                     SlotMachine.MinSlots, SlotMachine.MaxSlots);
-                // 单格 0.2 秒到 10 秒，总时长 = 单格 × 格数。
+                // 单格 0.2 秒到 10 秒，这里是「旋转总时长」= 单格 × 格数。
+                // 排片表还会在这个基础上再加一段定格（SlotMachine.SettleSeconds），
+                // 让最后一格停住之后板面静止一会儿再出结果。
                 return TimeSpan.FromSeconds(ClampSeconds(settings.SlotStepSeconds, 0.2, 10) * slots);
             }
 

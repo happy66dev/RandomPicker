@@ -118,6 +118,50 @@ public class AnimationPlaybackTests
                                                           / broken.Duration.TotalSeconds));
     }
 
+    /// <summary>
+    /// 老虎机最后一格必须<b>提前</b>停住，后面留一段静止的定格。
+    /// </summary>
+    /// <remarks>
+    /// <b>这条是为 2026-09-15「老虎机最后的抽取有问题，应该最后一个字展示一会会再继续」建的。</b>
+    /// 当时的排片表把总时长定成「每格 × 格数」，最后一格恰好在总时长那一刻才停住，
+    /// 动画当场结束就切去出结果，拼好的名字一帧都留不下。
+    /// <para/>
+    /// 断言分两层：排片表那一层验总时长里确实多出一段定格；
+    /// 动画那一层验最后一个关键帧落在总时长<b>之前</b>——那截差值就是留白本身。
+    /// </remarks>
+    [AvaloniaFact]
+    public void SlotAnimation_HoldsTheFinishedBoardBeforeTheAnimationEnds()
+    {
+        var settings = new PickerSettings { AnimationStyle = RevealAnimationStyle.Slot, SlotStepSeconds = 1.5 };
+        var plan = RevealAnimationPlanner.Build(RevealAnimationStyle.Slot, Names, "张三", settings);
+        var slot = Assert.IsType<SlotPlan>(plan);
+
+        // 排片表这一层：总时长 = 每格 × 格数 + 定格。
+        var spinTime = slot.Step * slot.SlotCount;
+        Assert.True(slot.Total > spinTime, "排片表的总时长里没有留下定格那段");
+        Assert.Equal(spinTime + TimeSpan.FromSeconds(SlotMachine.SettleSeconds), slot.Total);
+
+        // 动画这一层：最后一个关键帧落在总时长之前，差值就是留白。
+        var control = new SlotMachineAnimation(BaseSettings.RevealFontSize, Colors.Cyan);
+        control.Load(slot);
+        var animation = control.BuildAnimation();
+
+        Assert.Equal(slot.Total, animation.Duration);
+        Assert.NotEmpty(animation.Children);
+
+        var lastLanding = animation.Children[animation.Children.Count - 1].KeyTime;
+        Assert.True(lastLanding < animation.Duration,
+            $"最后一格停在 {lastLanding}，而动画总长 {animation.Duration}——没有留白，名字一帧都留不下");
+        // 留白的长度正好是设定值，不多不少。
+        Assert.Equal(TimeSpan.FromSeconds(SlotMachine.SettleSeconds), animation.Duration - lastLanding);
+
+        // 关键帧的 cue 依然都落在 0~1 里（Duration 漏写会在这里炸开）。
+        foreach (var keyFrame in animation.Children)
+        {
+            Assert.InRange(CueOf(keyFrame, animation.Duration), 0.0, 1.0);
+        }
+    }
+
     /// <summary>按 Avalonia 的算法，把一个关键帧换算成 cue。</summary>
     /// <remarks>关键帧写的是绝对时刻（<c>KeyFrameTimingMode.TimeSpan</c>），所以要除以总时长。</remarks>
     private static double CueOf(KeyFrame keyFrame, TimeSpan duration) =>
