@@ -270,7 +270,7 @@ public class AnimationPlaybackTests
         var animation = Assert.Single(control.BuildAnimations());
 
         // 第二格（唯一候选的那一格）：先空着，到动作结束才亮。
-        var secondSlot = FramesOf(animation, SlotMachineAnimation.Slot1ProgressProperty);
+        var secondSlot = AnimationKeyFrames.FramesOf(animation, SlotMachineAnimation.Slot1ProgressProperty);
 
         Assert.NotEmpty(secondSlot);
         // 最早的画面必须是空的（进度 0），而且不能落在时刻 0 上——那等于开场就亮。
@@ -282,38 +282,13 @@ public class AnimationPlaybackTests
         Assert.Equal(slot.MotionTotal, secondSlot[^1].Time);
 
         // 对照：真正要转的第一格是从时刻 0 就开始的。
-        var firstSlot = FramesOf(animation, SlotMachineAnimation.Slot0ProgressProperty);
+        var firstSlot = AnimationKeyFrames.FramesOf(animation, SlotMachineAnimation.Slot0ProgressProperty);
 
         Assert.NotEmpty(firstSlot);
         Assert.Equal(TimeSpan.Zero, firstSlot[0].Time);
         Assert.Equal(0.0, firstSlot[0].Value);
         Assert.Equal(slot.MotionTotal, firstSlot[^1].Time);
         Assert.Equal(1.0, firstSlot[^1].Value);
-    }
-
-    /// <summary>挑出某个属性上的所有关键帧，按原顺序返回「时刻 + 值」。</summary>
-    /// <remarks>
-    /// 关键帧里装的是 <c>IAnimationSetter</c>，它的 <c>Property</c>/<c>Value</c> 在插件这一侧不可访问
-    /// （接口成员不是 public），所以要落到具体的 <see cref="Setter"/> 上再读。
-    /// 喵~防御：值不是 double 的（类型写错）直接跳过，不硬转。
-    /// </remarks>
-    private static (TimeSpan Time, double Value)[] FramesOf(Animation animation, AvaloniaProperty property)
-    {
-        var frames = new List<(TimeSpan Time, double Value)>();
-        foreach (var keyFrame in animation.Children)
-        {
-            foreach (var setter in keyFrame.Setters)
-            {
-                if (setter is Setter concrete
-                    && concrete.Property == property
-                    && concrete.Value is double value)
-                {
-                    frames.Add((keyFrame.KeyTime, value));
-                }
-            }
-        }
-
-        return [.. frames];
     }
 
     /// <summary>按 Avalonia 的算法，把一个关键帧换算成 cue。</summary>

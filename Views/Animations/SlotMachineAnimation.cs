@@ -51,6 +51,24 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
     /// <summary>每一格旋转时依次出现的字，最后一个必定是中选者的那个字；空序列表示这一格留空。</summary>
     private char[][] _spinSequences = [];
 
+    /// <summary>
+    /// 每一格的字轮播时间表：累加到这里就该换下一个字，数值是 0~1 的进度。
+    /// </summary>
+    /// <remarks>
+    /// 长度就是这一格的序列长度。各格共用同一张表（每格转多久是一样的）。
+    /// <para/>
+    /// <b>用它而不是「对进度做缓动曲线」是有原因的。</b>原来写的是
+    /// <c>floor(easeOutCubic(进度) × (字数 - 1))</c>，而缓动曲线只在进度恰好等于 1 时才取到 1——
+    /// 也就是<b>结果那个字只在最后一刻出现、停留时间为零</b>，
+    /// 倒数第二个字却从进度 0.55 一直霸占到结束（占整格 45% 的时间）。
+    /// 看起来就是「卡在一个字上不动，然后啪地跳成答案」——
+    /// 2026-09-15 主人报的「他的字会跳」就是这个。
+    /// <para/>
+    /// 换成时间表之后，每个字拿到一段实实在在的停留时间，而且是等比递增的
+    /// （先快后慢），和滚动名字用的是同一套曲线，两个样式的节奏一致。
+    /// </remarks>
+    private double[] _spinThresholds = [];
+
     /// <summary>当前实际用了几格（2~4）。</summary>
     private int _slotCount;
 
@@ -171,6 +189,12 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
         _planTotal = slot.Total;
 
         _spinSequences = new char[_slotCount][];
+
+        // 这一格的字轮播时间表：等比递增的停留时长，先快后慢。
+        // 直接复用滚动名字那套（ScrollTicks），两个样式的「抽」感一致，而且那套已经有单测钉着。
+        var intervals = ScrollTicks.BuildIntervals(_slotStep.TotalSeconds);
+        _spinThresholds = BuildThresholds(intervals);
+
         for (var i = 0; i < _slotCount; i++)
         {
             // 这一格的候选字（已排序去重，字符串里的每个字符就是一个候选）。
@@ -178,7 +202,10 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
             // 中选者在这一格的字；null 表示这一格留空。
             var winnerChar = i < slot.WinnerChars.Count ? slot.WinnerChars[i] : null;
             // 这一格旋转时依次出现的字。
-            _spinSequences[i] = BuildSpinSequence(candidates, winnerChar);
+            // 要转的格子按时间表轮播；不转的格子（候选只剩唯一）只给一个字——
+            // 给整条序列的话，最后那 140 毫秒的淡入里会飞快闪一串字，看着像花了屏。
+            var entries = i < _spinSlotCount ? _spinThresholds.Length : 1;
+            _spinSequences[i] = BuildSpinSequence(candidates, winnerChar, entries);
         }
 
         // 格子尺寸跟着中央大字的字号档位走。
@@ -346,16 +373,7 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
             var sequence = _spinSequences[i];
 
             // 这一格当前该显示哪个字。留空格和还没开始的格子都是 null（什么都不画）。
-            char? shown = null;
-            if (sequence.Length > 0 && progress > 0)
-            {
-                // 把线性进度压成「起手飞快、收尾一点一点挪」，曲线和另外三种样式共用。
-                var eased = RevealEasing.EaseOutCubic(progress);
-                // 落到序列的第几个字上。
-                var step = (int)Math.Floor(eased * (sequence.Length - 1));
-                // 取出来夹一下，浮点误差不会让它越界。
-                shown = sequence[Math.Clamp(step, 0, sequence.Length - 1)];
-            }
+            var shown = ShownCharAt(i, progress);
 
             // 格子底色：没定下来的暗一些，定下来的亮一些。
             var background = new SolidColorBrush(settled
@@ -400,7 +418,133 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
     /// <param name="candidates">这一格的候选字（已排序去重）。</param>
     /// <param name="winnerChar">中选者在这一格的字；<c>null</c> 表示这一格留空。</param>
     /// <returns>依次出现的字，最后一个是 <paramref name="winnerChar"/>；留空的格子返回空数组。</returns>
-    private static char[] BuildSpinSequence(string? candidates, char? winnerChar)
+    /// <summary>
+    /// 某一格在给定进度下显示的字。
+    /// </summary>
+    /// <param name="slot">格号，从 0 起。</param>
+    /// <param name="progress">这一格的进度，0~1。</param>
+    /// <returns>要画的那个字；<c>null</c> 表示这一格什么都不画（留空，或还没轮到它）。</returns>
+    /// <remarks>
+    /// 渲染那条路也走这里，所以「什么时候显示哪个字」可以被单测直接验到——
+    /// 光是测时间表和序列还不够：把渲染改回「对进度做缓动」的话，
+    /// 时间表那几条测试照样绿，问题却已经回来了。
+    /// </remarks>
+    internal char? ShownCharAt(int slot, double progress)
+    {
+        // 喵~防御：格号越界（排片表被改过）时不画。
+        if (slot < 0 || slot >= _spinSequences.Length)
+        {
+            return null;
+        }
+
+        var sequence = _spinSequences[slot];
+        // 留空的格子没有字；进度还是 0 说明还没轮到这一格，板面上是个空框。
+        if (sequence.Length == 0 || !(progress > 0))
+        {
+            return null;
+        }
+
+        // 按时间表查出该显示第几个字。
+        return sequence[EntryIndexAt(_spinThresholds, progress, sequence.Length)];
+    }
+
+    /// <summary>
+    /// 把「每一段停留多久」换算成「累加到多少进度就换下一个字」。
+    /// </summary>
+    /// <param name="intervals">每一段停留多久，单位：秒。各项之和就是这一格的总时长。</param>
+    /// <returns>阈值数组，长度和 <paramref name="intervals"/> 一致，最后一项一定是 1。</returns>
+    /// <remarks>换成的是一张递增的表，渲染时只要比一个数，不用每帧重算停留时长。</remarks>
+    internal static double[] BuildThresholds(IReadOnlyList<double> intervals)
+    {
+        // 喵~防御：没有分段时给一张空表，调用方会当成「没有字可显示」。
+        if (intervals is null || intervals.Count == 0)
+        {
+            return [];
+        }
+
+        // 先把总时长算出来，后面每一项都要除以它。
+        var total = 0.0;
+        foreach (var seconds in intervals)
+        {
+            // 喵~防御：坏值（负数、NaN）当 0 处理，否则总和会变成 NaN，整张表都废掉。
+            total += double.IsFinite(seconds) && seconds > 0 ? seconds : 0;
+        }
+
+        var thresholds = new double[intervals.Count];
+
+        // 喵~防御：总时长为 0（时长配置被改坏）时平均分，最后一项仍然是 1。
+        if (total <= 0)
+        {
+            for (var i = 0; i < thresholds.Length; i++)
+            {
+                thresholds[i] = (i + 1) / (double)thresholds.Length;
+            }
+
+            return thresholds;
+        }
+
+        var accumulated = 0.0;
+        for (var i = 0; i < thresholds.Length; i++)
+        {
+            var seconds = double.IsFinite(intervals[i]) && intervals[i] > 0 ? intervals[i] : 0;
+            accumulated += seconds;
+            thresholds[i] = accumulated / total;
+        }
+
+        // 最后一项钉成 1：把浮点累加的小尾巴抹平，
+        // 免得末尾差一点点，最后一个字永远显示不出来。
+        thresholds[^1] = 1.0;
+        return thresholds;
+    }
+
+    /// <summary>
+    /// 查出进度落在时间表的第几段上，也就是「该显示序列里的第几个字」。
+    /// </summary>
+    /// <param name="thresholds">阈值数组，递增。</param>
+    /// <param name="progress">当前进度，0~1。</param>
+    /// <param name="sequenceLength">序列长度，用来夹住返回值。</param>
+    /// <remarks>
+    /// 主人注意：这里是一次线性扫描，每帧每格一次。表长跟着单格时长走
+    /// （1.5 秒一格约 20 项，10 秒一格也不到 240 项），四格合起来每帧最多几百次比较，
+    /// 相对 Skia 那边的绘制可以忽略。真要更省可以改成二分查找。
+    /// </remarks>
+    internal static int EntryIndexAt(IReadOnlyList<double> thresholds, double progress, int sequenceLength)
+    {
+        // 喵~防御：序列是空的，或者进度不是有限数（动画还没写过它）时回第 0 项。
+        if (thresholds is null || thresholds.Count == 0 || !double.IsFinite(progress))
+        {
+            return 0;
+        }
+
+        for (var i = 0; i < thresholds.Count; i++)
+        {
+            if (progress <= thresholds[i])
+            {
+                // 第一段「进度还没越过」的就是它。
+                return Math.Clamp(i, 0, sequenceLength - 1);
+            }
+        }
+
+        // 进度比最后一段还大（浮点误差）→ 落在最后一个字上。
+        return Math.Max(0, sequenceLength - 1);
+    }
+
+    /// <summary>
+    /// 造出这一格旋转时依次出现的字。
+    /// </summary>
+    /// <param name="candidates">这一格的候选字，每个字符一个候选，已排序。</param>
+    /// <param name="winnerChar">中选者在这一格的字；<c>null</c> 表示这一格留空。</param>
+    /// <param name="entryCount">要造几个字，也就是要换几次。</param>
+    /// <returns>依次出现的字；留空格返回空数组。</returns>
+    /// <remarks>
+    /// <b>前 <c>entryCount - 1</c> 个按顺序轮着取候选字——包括结果自己。</b>
+    /// 只有两个候选时（比如「张」「李」），把结果排除在外会让这一格一直闪同一个字，
+    /// 看着像卡住了，最后才突然跳成结果。结果字在旋转途中闪过是正常的：
+    /// 它本来就是候选之一，闪过几次不代表「已经抽出来了」。
+    /// <para/>
+    /// 唯一要躲开的是「倒数第二个正好是结果」——那看起来像早就停了。
+    /// </remarks>
+    internal static char[] BuildSpinSequence(string? candidates, char? winnerChar, int entryCount)
     {
         // 喵~防御：留空的格子（中选者比格数短）没有字可转，给一个空序列。
         if (winnerChar is null || string.IsNullOrEmpty(candidates))
@@ -408,26 +552,56 @@ internal sealed class SlotMachineAnimation : RevealAnimationBase
             return [];
         }
 
-        // 转 12 下收尾。前 11 个从候选里轮着取，够快才像在抽。
-        const int steps = 12;
-        var sequence = new char[steps];
-        var cursor = 0;
-        for (var i = 0; i < steps - 1; i++)
+        // 喵~防御：要 0 个或负数个字时给空序列，调用方会当成「没有字可显示」。
+        if (entryCount <= 0)
         {
-            // 喵~防御：轮到的这个字如果正好是结果，就往前跳一个，
-            // 免得倒数第二下就已经显示结果、看起来像「早就停了」。
-            if (candidates[cursor % candidates.Length] == winnerChar.Value)
-            {
-                cursor++;
-            }
+            return [];
+        }
 
-            // 把当前这个字写进序列。
-            sequence[i] = candidates[cursor % candidates.Length];
-            cursor++;
+        // 不转的格子（候选只剩唯一）只给一个字。
+        // 给整条序列的话，最后那 140 毫秒的淡入里会飞快闪一串字，看着像花了屏。
+        if (entryCount == 1)
+        {
+            return [winnerChar.Value];
+        }
+
+        var sequence = new char[entryCount];
+
+        // 前面按候选顺序轮着取，取完一轮从头再来。
+        for (var i = 0; i < entryCount - 1; i++)
+        {
+            sequence[i] = candidates[i % candidates.Length];
+        }
+
+        // 倒数第二个如果正好是结果，换成别的候选。
+        // 喵~防御：候选只有结果自己时没有别人可换，那就保持原样——
+        // 这种格子本来就不该转（排片表会把它排除在 SpinSlotCount 之外）。
+        if (sequence[entryCount - 2] == winnerChar.Value)
+        {
+            var alternative = FindOtherCandidate(candidates, winnerChar.Value);
+            if (alternative is { } other)
+            {
+                sequence[entryCount - 2] = other;
+            }
         }
 
         // 最后一个字必定是中选者的那个字。
-        sequence[steps - 1] = winnerChar.Value;
+        sequence[entryCount - 1] = winnerChar.Value;
         return sequence;
+    }
+
+    /// <summary>从候选里挑一个不是结果的字，用来避免「倒数第二下就出现结果」。</summary>
+    /// <returns>挑不到（候选只有结果自己）时返回 <c>null</c>。</returns>
+    private static char? FindOtherCandidate(string candidates, char winnerChar)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (candidate != winnerChar)
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }

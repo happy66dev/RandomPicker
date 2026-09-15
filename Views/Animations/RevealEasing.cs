@@ -32,20 +32,4 @@ internal static class RevealEasing
     /// 回弹幅度很小（默认振幅），不会甩到隔壁格子上去。
     /// </remarks>
     public static Easing Settle { get; } = new BackEaseOut();
-
-    /// <summary>
-    /// 老虎机每格内部用的减速曲线，作用在「线性进度」上。
-    /// </summary>
-    /// <remarks>
-    /// 老虎机的进度属性是直线从 0 推到 1 的（这样每格占的时间窗一眼能看出来），
-    /// 所以「先快后慢」得在画的时候自己算。这里给的是一条
-    /// <c>1-(1-p)³</c> 的曲线，和 <see cref="Decelerate"/> 同族。
-    /// </remarks>
-    public static double EaseOutCubic(double progress)
-    {
-        // 喵~防御：进度可能因为浮点误差略微越界，先夹回 [0,1]，
-        // 否则下面求幂会算出负数，取整之后字就跳飞了。
-        var clamped = progress < 0 ? 0 : progress > 1 ? 1 : progress;
-        return 1 - System.Math.Pow(1 - clamped, 3);
-    }
 }
