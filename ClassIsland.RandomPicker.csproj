@@ -63,6 +63,22 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- 测试代码不属于插件主体。SDK 默认会把项目目录下所有 .cs 都收进来编译，
+             于是 tests/ 里的测试文件（以及它自己的 obj/ 生成文件）会被当成插件的源码，
+             一编译就是一堆「找不到 Fact」的错误。这里整块剔除。 -->
+        <Compile Remove="tests/**" />
+        <None Remove="tests/**" />
+        <EmbeddedResource Remove="tests/**" />
+        <AvaloniaResource Remove="tests/**" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- 测试项目要直接测插件里 internal 的几何计算与抽选状态，放开给它看。
+             只开给这一个程序集名，插件对外依然是封闭的。 -->
+        <InternalsVisibleTo Include="ClassIsland.RandomPicker.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
         <None Include="manifest.yml" CopyToOutputDirectory="PreserveNewest" />
         <None Include="README.md" CopyToOutputDirectory="PreserveNewest" />
         <None Include="icon.png" CopyToOutputDirectory="PreserveNewest" Condition="Exists('icon.png')" />

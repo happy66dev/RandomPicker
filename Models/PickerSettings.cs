@@ -60,7 +60,18 @@ public class PickerSettings
     public int WindowY { get; set; } = int.MinValue;
 
     /// <summary>「不重复」模式下本轮已经抽到过的人。</summary>
-    public List<string> DrawnThisRound { get; set; } = new();
+    public List<string> DrawnThisRound
+    {
+        // 直接把底层列表交出去，调用方（抽选逻辑）需要就地增删。
+        get => _drawnThisRound;
+        // 喵~防御：配置文件被手改成 "DrawnThisRound": null 时，反序列化会把字段整个盖成 null，
+        // 之后每一次 Contains 都会崩在空引用上。这里统一兜底成空列表，
+        // 语义上正好是「本轮还没抽过任何人」，是唯一安全的解释。
+        set => _drawnThisRound = value ?? new List<string>();
+    }
+
+    /// <summary>本轮已抽名单的底层存储，永远不会是 null。</summary>
+    private List<string> _drawnThisRound = new();
 
     /// <summary>上一次抽到的人，用于「随机抽选」模式回避连抽同一个。</summary>
     public string? LastPicked { get; set; }
