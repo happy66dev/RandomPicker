@@ -1,5 +1,8 @@
 # 随机抽选
 
+> 本仓库是 [Gordonynh/RandomPicker](https://github.com/Gordonynh/RandomPicker)
+> 的二次修改版，由 happy 维护。原作者与改动内容见文末「作者与二改说明」。
+
 桌面上的一个小圆钮，按一下抽一个人。
 
 ## 怎么用
@@ -135,6 +138,20 @@
 - 仓库：<https://github.com/Gordonynh/RandomPicker>　·　MIT 协议
 - 针对 ClassIsland 2.1（Avalonia）构建；随 release 提供打包好的 `.cipx`
 - 从源码编译：克隆到 ClassIsland 源码树的 `plugins/` 目录下，`dotnet build -c Release`
+
+## 作者与二改说明
+
+- **原作者**：GordonYoung —— [Gordonynh/RandomPicker](https://github.com/Gordonynh/RandomPicker)，MIT 协议
+- **二改维护**：happy
+- **二改日期**：2026-09-15
+- **相对上游的主要改动**：
+  - 抽选动画：滚动名字 / CSGO 开箱 / 老虎机 / 拼多多转盘，外加「无动画」共五种样式；
+    四种时长各自可配，样式在悬浮钮右键菜单里切换，宿主动画等级为 0 时自动安静
+  - 四种动画的排片表逻辑抽成不依赖界面的纯类，配了单元测试；
+    人脸几何、名单解析、设置读写等可离线验证的部分也一并补了测试
+  - 本 README 的「抽选动画」「开发」两节
+
+原仓库的 `id`、`name` 保持不变，与上游插件**不能同时安装**，装之前先把原版卸掉。
 
 ## 开发
 
