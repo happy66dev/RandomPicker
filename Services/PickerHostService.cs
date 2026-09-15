@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
+using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Core.Models.Notification;
 using ClassIsland.RandomPicker.Models;
 using ClassIsland.RandomPicker.Views;
@@ -24,6 +25,9 @@ public class PickerHostService : IHostedService
 
     /// <summary>拍照抽人正在跑。摄像头开一次要一两秒，这期间再点就直接忽略。</summary>
     private bool _shooting;
+
+    /// <summary>抽选动画正在播。这期间再点也直接忽略——不然结果会被后一次抽选顶掉。</summary>
+    private bool _animating;
 
     private PickerSettings _settings = new();
     private RosterService? _roster;
@@ -72,6 +76,8 @@ public class PickerHostService : IHostedService
         SaveSettingsInternal();
         Dispatcher.UIThread.Post(() =>
         {
+            // 插件要停了，正在播的动画会被掐掉——同一个理由，标记得手动清。
+            ReleaseAnimation();
             RevealWindow.CloseCurrent();
             _window?.Close();
             _window = null;
@@ -93,6 +99,9 @@ public class PickerHostService : IHostedService
         _window.SettingsChanged += (_, _) => SaveSettingsInternal();
         _window.HideRequested += (_, _) =>
         {
+            // 藏起来的时候正在播的动画会被掐掉，而掐掉的动画不会再回调收尾，
+            // 所以「正在播」这个标记必须在这里手动清掉——不清的话以后再也抽不动了。
+            ReleaseAnimation();
             RevealWindow.CloseCurrent();
             _window?.Hide();
             // 藏起来之后还能从「设置 → 提醒 → 随机抽选」那边知道插件还在，
@@ -112,6 +121,12 @@ public class PickerHostService : IHostedService
     /// </summary>
     private void Pick()
     {
+        // 上一轮还在演的时候再点没有意义：结果已经定好了，硬插进去只会让画面和中选者对不上。
+        if (_animating)
+        {
+            return;
+        }
+
         if (_roster is null)
         {
             return;
@@ -205,7 +220,8 @@ public class PickerHostService : IHostedService
     /// <param name="note">附带说明，比如从拍照模式退回来的原因。</param>
     private void PickFromRoster(string? note = null)
     {
-        if (_roster is null)
+        // 同上：动画没播完就再来一发，只会让画面和中选者对不上。
+        if (_animating || _roster is null)
         {
             return;
         }
@@ -222,7 +238,64 @@ public class PickerHostService : IHostedService
             return;
         }
 
-        FinishReveal(name, note);
+        StartAnimation(name, note);
+    }
+
+    /// <summary>
+    /// 解开「正在播动画」的封锁，并把悬浮钮恢复成剩余人数。
+    /// </summary>
+    /// <remarks>
+    /// 只在动画被<b>中途掐掉</b>的地方调用（藏窗口、插件停止）。
+    /// 正常播完的那条路走的是 <see cref="StartAnimation"/> 里的回调，那边自己会解。
+    /// </remarks>
+    private void ReleaseAnimation()
+    {
+        _animating = false;
+        _window?.SetBusy(PickerBusyKind.None);
+    }
+
+    /// <summary>
+    /// 该播动画就播，播完再出结果；不该播就直接出结果。
+    /// </summary>
+    /// <param name="name">中选者。</param>
+    /// <param name="note">附带说明，比如从拍照模式退回来的原因。</param>
+    /// <remarks>
+    /// <b>动画完全不参与抽选</b>：名字在这里之前就已经定好了，这段代码只决定「怎么演」。
+    /// 所以任何一步出问题（宿主动画被关掉、名单数据不满足这个样式、时长配置被改坏），
+    /// 都可以放心地退化成「直接出结果」，不会影响公平性。
+    /// </remarks>
+    private void StartAnimation(string name, string? note)
+    {
+        // 尊重宿主自己的动画开关：用户在 ClassIsland 里关掉动画时，插件必须跟着安静。
+        var style = AnimationGate.Resolve(_settings.AnimationStyle,
+            IThemeService.AnimationLevel, IThemeService.IsTransientDisabled);
+
+        // 按样式造排片表；数据不满足要求时返回 null（比如名单里有超过四个字的名字却选了老虎机）。
+        var plan = style == RevealAnimationStyle.None
+            ? null
+            : RevealAnimationPlanner.Build(style, TextRoster.Names, name, _settings);
+
+        // 不播动画这条路：直接出结果。
+        if (plan is null)
+        {
+            FinishReveal(name, note);
+            return;
+        }
+
+        // 播动画这条路：这期间挡住新的抽选，钮上显示「抽选中」。
+        _animating = true;
+        _window?.SetBusy(PickerBusyKind.Animating);
+
+        // 停留时长从一开始就传进去，动画播完它才开始计时。
+        var hold = TimeSpan.FromSeconds(Math.Clamp(_settings.RevealSeconds, 0.5, 30));
+
+        RevealWindow.Play(plan, _settings.RevealFontSize, _window?.Accent ?? DefaultAccent, hold, () =>
+        {
+            // 动画播完（或被跳过）的这一刻：解禁、恢复钮上的剩余人数，然后出结果。
+            _animating = false;
+            _window?.SetBusy(PickerBusyKind.None);
+            FinishReveal(name, note);
+        });
     }
 
     /// <summary>
